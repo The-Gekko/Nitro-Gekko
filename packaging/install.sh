@@ -5,14 +5,22 @@
 #  Panel de control del Acer Nitro AN17-51 para GNOME.
 #
 #  USO
-#    sudo ./packaging/install.sh                 instala en el sistema
+#    sudo ./packaging/install.sh                 instala en el sistema (polkit)
+#    sudo ./packaging/install.sh --con-udev      instala Y abre /sys a 'wheel'
 #    sudo ./packaging/install.sh --uninstall     desinstala
 #    DESTDIR=/tmp/prueba ./packaging/install.sh  instala en un arbol falso
 #                                                (no toca el sistema, no pide root)
 #
-#  Con DESTDIR puesto el instalador NO recarga udev, NO recarga tmpfiles y NO
-#  toca /sys: solo construye el arbol de ficheros. Es la forma de revisar que
-#  va a instalar antes de dejarle tocar el equipo de verdad.
+#  Este script instala la APLICACION (codigo, lanzador, icono, extension de
+#  GNOME Shell, helper privilegiado y politica polkit).  El HARDWARE -modulo
+#  acer_wmi/linuwu_sense, limite de PL1, power-profiles-daemon, atajo del
+#  boton de la marca- lo prepara ./packaging/preparar-sistema.sh, que es otro
+#  script y se lanza aparte.
+#
+#  Con DESTDIR puesto el instalador NO recarga udev, NO recarga tmpfiles, NO
+#  refresca las caches del escritorio y NO toca /sys: solo construye el arbol
+#  de ficheros. Es la forma de revisar que va a instalar antes de dejarle
+#  tocar el equipo de verdad.
 # ============================================================================
 
 set -euo pipefail
@@ -79,8 +87,17 @@ aviso() { printf '%sAVISO%s %s\n'    "$C_AMAR"  "$C_FIN" "$*" >&2; }
 error() { printf '%sERROR%s %s\n'    "$C_ROJO"  "$C_FIN" "$*" >&2; }
 titulo(){ printf '\n%s%s%s\n'        "$C_NEG"   "$*"     "$C_FIN"; }
 
+# Se cuentan por separado dos cosas que NO son lo mismo:
+#   aviso  -> algo que la persona deberia leer (hardware distinto, falta un
+#             modulo opcional).  El instalador sigue y termina bien.
+#   error  -> un fichero que habia que instalar y NO se instalo (disco lleno,
+#             /usr de solo lectura, sin permiso).  Eso hace que el instalador
+#             termine con codigo != 0, para que un makepkg o un script que lo
+#             llame se entere.
 HUBO_AVISOS=0
+HUBO_ERRORES=0
 aviso_contado() { HUBO_AVISOS=$((HUBO_AVISOS + 1)); aviso "$@"; }
+error_contado() { HUBO_ERRORES=$((HUBO_ERRORES + 1)); error "$@"; }
 
 # ---------------------------------------------------------------------------
 #  Usuario real (el instalador corre como root via sudo, pero la extension de
@@ -169,16 +186,33 @@ explicar_predator_v4() {
        el fichero de modprobe.d no sirve: hay que anadir acer_wmi.predator_v4=1
        a la linea de arranque del kernel.
 
+    5) Si despues de todo esto platform_profile sigue sin aparecer, tu modelo
+       no lo reconoce acer_wmi ni forzando el quirk.  Queda la otra via, que
+       ademas es la unica con teclado RGB:
+
+         sudo ./packaging/instalar-rgb.sh     (linuwu_sense por DKMS)
+
+       Se deshace solo si tampoco te da los perfiles, asi que probarlo no te
+       deja peor de lo que estabas.
+
 AYUDA
 }
 
 comprobar_modulo() {
-    titulo "2. Modulo acer_wmi"
+    titulo "2. Driver de la plataforma Acer"
 
     local hay_problema=0
 
-    if [[ ! -d /sys/module/acer_wmi ]]; then
-        aviso_contado "El modulo acer_wmi NO esta cargado."
+    # Hay DOS drivers validos y son mutuamente excluyentes:
+    #   acer_wmi predator_v4=1  -> perfiles termicos y tacometros
+    #   linuwu_sense            -> lo mismo Y ADEMAS el teclado RGB de 4 zonas
+    # linuwu_sense sustituye a acer_wmi, asi que buscar solo acer_wmi daba un
+    # aviso falso en cuanto se instalaba el driver del RGB.
+    if [[ -d /sys/module/linuwu_sense ]]; then
+        ok "linuwu_sense cargado (perfiles, ventiladores y teclado RGB)"
+    elif [[ ! -d /sys/module/acer_wmi ]]; then
+        aviso_contado "No hay ningun driver de plataforma Acer cargado."
+        aviso_contado "Ejecuta:  sudo ./packaging/preparar-sistema.sh"
         hay_problema=1
     else
         ok "acer_wmi cargado."
@@ -212,31 +246,49 @@ comprobar_modulo() {
     if [[ ! -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
         aviso_contado "No esta el modulo DKMS acer-wmi-battery (health_mode no existe)."
         aviso_contado "Sin el, la aplicacion no podra limitar la carga de la bateria al 80%."
-        aviso_contado "Es un modulo aparte, no viene con el kernel: acer-wmi-battery-dkms."
+        aviso_contado "Es un modulo aparte, no viene con el kernel; esta en el AUR:"
+        aviso_contado "    yay -S acer-wmi-battery-dkms-git"
+        aviso_contado "Despues, 'sudo ./packaging/preparar-sistema.sh' le pone la carga temprana."
     else
         ok "acer-wmi-battery presente (limite de carga disponible)."
     fi
 
     if (( hay_problema )); then
+        aviso_contado "Todo esto lo deja listo, y de forma reversible:"
+        aviso_contado "    sudo ./packaging/preparar-sistema.sh"
+        aviso_contado "Si prefieres hacerlo a mano, los pasos son estos:"
         explicar_predator_v4
     fi
 }
 
 comprobar_grupo_wheel() {
     titulo "3. Grupo wheel"
+    # 'wheel' importa en los DOS modos, pero por motivos distintos:
+    #   polkit    -> en Arch la regla por defecto (50-default.rules) considera
+    #                administradores a los miembros de wheel, asi que son los
+    #                que pueden responder al dialogo de auth_admin_keep.
+    #   --con-udev -> es el grupo al que se le abre la escritura en /sys.
     if getent group wheel >/dev/null; then
         ok "El grupo wheel existe (gid $(getent group wheel | cut -d: -f3))."
         if id -nG "$USUARIO" | tr ' ' '\n' | grep -qx wheel; then
             ok "El usuario '$USUARIO' pertenece a wheel."
-        else
+        elif (( CON_UDEV )); then
             aviso_contado "El usuario '$USUARIO' NO esta en el grupo wheel."
-            aviso_contado "Nitro Gekko no podra escribir nada. Anadelo con:"
+            aviso_contado "Con --con-udev es wheel quien recibe la escritura en /sys, asi"
+            aviso_contado "que la aplicacion no podra cambiar nada. Anadelo con:"
             aviso_contado "    sudo usermod -aG wheel $USUARIO"
             aviso_contado "y vuelve a iniciar sesion."
+        else
+            aviso_contado "El usuario '$USUARIO' NO esta en el grupo wheel."
+            aviso_contado "En modo polkit la aplicacion funciona igual, pero el dialogo"
+            aviso_contado "pedira la contrasena de un administrador y no la tuya."
         fi
-    else
+    elif (( CON_UDEV )); then
         aviso_contado "No existe el grupo 'wheel' en este sistema."
-        aviso_contado "Las reglas y el tmpfiles.d se instalaran pero no serviran de nada."
+        aviso_contado "Las reglas udev y el tmpfiles.d se instalaran pero no serviran de nada."
+    else
+        aviso_contado "No existe el grupo 'wheel' en este sistema: comprueba a quien"
+        aviso_contado "considera administrador tu polkit antes de dar esto por bueno."
     fi
 }
 
@@ -250,7 +302,16 @@ poner() {
         aviso_contado "No existe '${origen#"$RAIZ"/}', se omite."
         return 1
     fi
-    install -Dm"$modo" "$origen" "${DESTDIR}${destino}"
+    # OJO: casi todas las llamadas a 'poner' llevan '|| true', y eso APAGA
+    # 'set -e' dentro de la funcion.  Sin comprobar aqui el codigo de salida,
+    # un 'install' que falla (disco lleno, destino de solo lectura, sin
+    # permiso) seguia cayendo en la linea siguiente e imprimiendo "ok", y el
+    # instalador terminaba diciendo "Terminado sin avisos".  Comprobado con un
+    # directorio de destino en 0555.
+    if ! install -Dm"$modo" "$origen" "${DESTDIR}${destino}"; then
+        error_contado "NO se pudo instalar ${destino}"
+        return 1
+    fi
     ok "${destino}"
 }
 
@@ -265,8 +326,18 @@ poner_arbol() {
         aviso_contado "El directorio '${origen#"$RAIZ"/}' esta vacio, se omite."
         return 1
     fi
-    install -d "${DESTDIR}${destino}"
-    cp -a "$origen"/. "${DESTDIR}${destino}/"
+    # Mismo motivo que en 'poner': aqui 'set -e' no protege nada porque la
+    # funcion se llama dentro de un 'if'.  Un fallo de cp dejaba el arbol a
+    # medias y la funcion devolvia 0, asi que el instalador daba por instalado
+    # el codigo y ponia el lanzador y la entrada de menu apuntando a nada.
+    if ! install -d "${DESTDIR}${destino}"; then
+        error_contado "NO se pudo crear ${destino}/"
+        return 1
+    fi
+    if ! cp -a "$origen"/. "${DESTDIR}${destino}/"; then
+        error_contado "NO se pudo copiar el arbol en ${destino}/"
+        return 1
+    fi
     # Basura de Python: no tiene nada que hacer en /usr.
     find "${DESTDIR}${destino}" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
     find "${DESTDIR}${destino}" -name '*.pyc' -type f -delete 2>/dev/null || true
@@ -282,7 +353,13 @@ poner_arbol() {
     if [[ "$(id -u)" -eq 0 ]]; then
         chown -R root:root "${DESTDIR}${destino}"
     fi
-    ok "${destino}/  ($(find "${DESTDIR}${destino}" -type f | wc -l) ficheros)"
+    local n
+    n="$(find "${DESTDIR}${destino}" -type f | wc -l)"
+    if (( n == 0 )); then
+        error_contado "${destino}/ ha quedado vacio: la copia no ha llegado."
+        return 1
+    fi
+    ok "${destino}/  ($n ficheros)"
 }
 
 # UUID de la extension, leido de metadata.json (nunca inventado)
@@ -290,6 +367,64 @@ uuid_extension() {
     local meta="$RAIZ/extension/metadata.json"
     [[ -f "$meta" ]] || return 1
     python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["uuid"])' "$meta" 2>/dev/null
+}
+
+# Versiones de GNOME Shell que declara la extension, una por linea.
+versiones_extension() {
+    local meta="$RAIZ/extension/metadata.json"
+    [[ -f "$meta" ]] || return 1
+    python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+print("\n".join(str(v) for v in d.get("shell-version", [])))' "$meta" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+#  ¿Va a cargar la extension en ESTE GNOME?
+#
+#  GNOME rechaza toda extension cuyo metadata.json no incluya la version de
+#  Shell que corre: la marca como "outdated" y se queda desactivada.  Y
+#  'gnome-extensions enable' no explica el motivo.  Como aqui metadata.json
+#  declara UNA sola version, en cualquier otro GNOME la extension no cargara
+#  jamas -- y sin este aviso la persona se queda dando vueltas al 'enable'
+#  creyendo que ha instalado mal algo.
+#
+#  Es un AVISO, no un error: la aplicacion no depende de la extension.
+# ---------------------------------------------------------------------------
+comprobar_version_gnome() {
+    local uuid="$1"
+    local declaradas lista mia mayor
+    declaradas="$(versiones_extension || true)"
+    if [[ -z "$declaradas" ]]; then
+        aviso_contado "extension/metadata.json no declara 'shell-version'."
+        aviso_contado "GNOME no cargara una extension sin ese campo."
+        return 0
+    fi
+    lista="$(printf '%s' "$declaradas" | tr '\n' ' ')"
+    if ! command -v gnome-shell >/dev/null; then
+        info "No hay gnome-shell aqui: la extension queda copiada pero sin usar."
+        info "La aplicacion funciona igual sin ella."
+        return 0
+    fi
+    mia="$(gnome-shell --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)*' | head -1 || true)"
+    mayor="${mia%%.*}"
+    if [[ -z "$mayor" ]]; then
+        info "No se ha podido leer la version de GNOME Shell; se omite la comprobacion."
+        return 0
+    fi
+    # GNOME acepta tanto "50" como "50.4" en el array; se prueban las dos.
+    if printf '%s\n' "$declaradas" | grep -qx -e "$mayor" -e "$mia"; then
+        ok "GNOME Shell $mia esta en la lista de la extension ($lista)"
+    else
+        aviso_contado "Tu GNOME Shell es $mia y la extension declara: $lista"
+        aviso_contado "GNOME la marcara como 'outdated' y NO la cargara. El comando"
+        aviso_contado "'gnome-extensions enable $uuid' no te dira por que."
+        aviso_contado "La APLICACION funciona igual: lo unico que pierdes es el"
+        aviso_contado "control del perfil y las RPM desde Configuracion rapida."
+        aviso_contado "Si quieres intentarlo igualmente, anade \"$mayor\" al array"
+        aviso_contado "shell-version de extension/metadata.json y repite la instalacion."
+        aviso_contado "No usa ninguna API estrenada en 50, pero no esta probada fuera."
+    fi
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -301,22 +436,90 @@ instalar() {
 
     # -- permisos (1): helper privilegiado + politica polkit -----------------
     # Este es el camino POR DEFECTO. El helper corre como root via pkexec y solo
-    # acepta cuatro acciones con nombre; la lista de rutas vive dentro de el, no
-    # se le pasa desde fuera.
+    # acepta DIEZ acciones con nombre; la lista de rutas vive dentro de el, no
+    # se le pasa desde fuera.  Ver packaging/SEGURIDAD.md.
     poner 755 "$RAIZ/packaging/$FICHERO_HELPER" "$DIR_APP/$FICHERO_HELPER" || true
     if [[ -f "$RAIZ/packaging/$FICHERO_POLICY" ]]; then
-        # Una politica polkit mal formada se ignora en silencio y el helper
-        # dejaria de poder autenticarse, asi que se valida antes de copiarla.
+        # Una politica polkit mal formada se ignora EN SILENCIO: la accion
+        # org.thegekko.nitrogekko.aplicar no existiria y pkexec caeria en
+        # org.freedesktop.policykit.exec (auth_admin sin cache = contrasena en
+        # cada pulsacion).  Como el sintoma no dice la causa, esto ABORTA la
+        # instalacion en vez de avisar.  Se valida ademas contra el DTD local
+        # de polkit, con --nonet, sustituyendo la URL remota por la ruta local:
+        # asi tambien se detecta un elemento o un atributo que polkit no
+        # entienda, no solo el XML roto.
         if command -v xmllint >/dev/null; then
-            if xmllint --noout "$RAIZ/packaging/$FICHERO_POLICY" 2>/dev/null; then
-                ok "politica polkit bien formada"
-            else
-                aviso_contado "El XML de $FICHERO_POLICY no es valido; polkit lo ignoraria."
+            if ! xmllint --nonet --noout "$RAIZ/packaging/$FICHERO_POLICY"; then
+                error_contado "El XML de $FICHERO_POLICY no esta bien formado; polkit lo ignoraria."
+                exit 1
             fi
+            local dtd="/usr/share/polkit-1/policyconfig-1.dtd"
+            if [[ -r "$dtd" ]]; then
+                local tmp_pol
+                tmp_pol="$(mktemp)"
+                sed "s#http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd#${dtd}#" \
+                    "$RAIZ/packaging/$FICHERO_POLICY" > "$tmp_pol"
+                # `xmllint --valid` DEVUELVE 0 CUANDO NO ENCUENTRA EL DTD: se
+                # limita a imprimir "Validation failed: no DTD found !" y sale
+                # con exito.  Comprobado en libxml2 con esta misma politica:
+                #
+                #   $ sed 's#.../PolicyKit/1/policyconfig.dtd#...#' pol \
+                #       | xmllint --nonet --noout --valid - ; echo $?
+                #   -:78: validity error : Validation failed: no DTD found !
+                #   0
+                #
+                # O sea que si el DOCTYPE del fichero cambia y la sustitucion
+                # deja de casar, fiarse del codigo de salida daria "ok" SIN
+                # HABER VALIDADO NADA.  Por eso no basta con mirar el codigo:
+                # se exige ademas que xmllint NO haya dicho nada.  Cualquier
+                # diagnostico (DTD no encontrado, elemento no declarado, error
+                # de E/S) significa que la politica no esta validada.
+                local salida_val=""
+                if salida_val="$(xmllint --nonet --noout --valid "$tmp_pol" 2>&1)" \
+                   && [[ -z "$salida_val" ]]; then
+                    ok "politica polkit valida contra $dtd"
+                else
+                    [[ -n "$salida_val" ]] && printf '%s\n' "$salida_val" >&2
+                    rm -f "$tmp_pol"
+                    error_contado "$FICHERO_POLICY no valida contra el DTD de polkit."
+                    exit 1
+                fi
+                rm -f "$tmp_pol"
+            else
+                ok "politica polkit bien formada (sin DTD local para validar)"
+            fi
+        else
+            aviso_contado "Sin xmllint: no se ha podido validar $FICHERO_POLICY."
         fi
-        poner 644 "$RAIZ/packaging/$FICHERO_POLICY" "$DIR_POLKIT/$FICHERO_POLICY" || true
+
+        # La anotacion exec.path de la politica lleva la ruta ABSOLUTA del
+        # helper escrita a mano (/usr/lib/...).  Con PREFIX distinto de /usr el
+        # helper acabaria en otro sitio y la anotacion apuntaria a un fichero
+        # que no existe: polkit no casaria la accion y pkexec pediria
+        # contrasena en cada pulsacion.  Se sustituye al instalar.
+        local ruta_helper="${DIR_APP}/${FICHERO_HELPER}"
+        install -d "${DESTDIR}${DIR_POLKIT}"
+        if sed "s#<annotate key=\"org.freedesktop.policykit.exec.path\">[^<]*#<annotate key=\"org.freedesktop.policykit.exec.path\">${ruta_helper}#" \
+               "$RAIZ/packaging/$FICHERO_POLICY" > "${DESTDIR}${DIR_POLKIT}/${FICHERO_POLICY}"; then
+            chmod 644 "${DESTDIR}${DIR_POLKIT}/${FICHERO_POLICY}"
+            [[ -z "$DESTDIR" ]] && [[ "$(id -u)" -eq 0 ]] && \
+                chown root:root "${DESTDIR}${DIR_POLKIT}/${FICHERO_POLICY}"
+            ok "${DIR_POLKIT}/${FICHERO_POLICY}  (exec.path -> ${ruta_helper})"
+        else
+            error_contado "No se ha podido instalar $FICHERO_POLICY."
+            exit 1
+        fi
+        # polkit solo lee /etc/polkit-1/actions, /run/polkit-1/actions,
+        # /usr/local/share/polkit-1/actions y /usr/share/polkit-1/actions
+        # (comprobado en polkit 127).  Con cualquier otro PREFIX la politica
+        # se copia a un sitio que polkit nunca mira.
+        case "$DIR_POLKIT" in
+            /usr/share/polkit-1/actions|/usr/local/share/polkit-1/actions|/etc/polkit-1/actions) ;;
+            *) aviso_contado "polkit NO lee $DIR_POLKIT: la app pedira contrasena en cada cambio." ;;
+        esac
     else
-        aviso_contado "Falta packaging/$FICHERO_POLICY: la app no podra pedir permisos."
+        error_contado "Falta packaging/$FICHERO_POLICY: la app no podria pedir permisos."
+        exit 1
     fi
 
     # -- permisos (2): reglas udev y tmpfiles, SOLO con --con-udev ------------
@@ -366,7 +569,10 @@ instalar() {
     elif [[ -f "$RAIZ/bin/$APP_BIN" ]]; then
         poner 755 "$RAIZ/bin/$APP_BIN" "$DIR_BIN/$APP_BIN" || true
     else
-        install -d "${DESTDIR}${DIR_BIN}"
+        if ! install -d "${DESTDIR}${DIR_BIN}"; then
+            error_contado "NO se pudo crear ${DIR_BIN}"
+            return 1
+        fi
         cat > "${DESTDIR}${DIR_BIN}/${APP_BIN}" <<LANZADOR
 #!/bin/sh
 # Lanzador de $APP_NOMBRE (generado por packaging/install.sh).
@@ -398,9 +604,12 @@ LANZADOR
     if [[ -d "$RAIZ/data/icons/hicolor" ]]; then
         while IFS= read -r -d '' icono; do
             local rel="${icono#"$RAIZ"/data/icons/hicolor/}"
-            install -Dm644 "$icono" "${DESTDIR}${DIR_ICONOS}/${rel}"
-            ok "${DIR_ICONOS}/${rel}"
-            instalado_icono=1
+            if install -Dm644 "$icono" "${DESTDIR}${DIR_ICONOS}/${rel}"; then
+                ok "${DIR_ICONOS}/${rel}"
+                instalado_icono=1
+            else
+                error_contado "NO se pudo instalar ${DIR_ICONOS}/${rel}"
+            fi
         done < <(find "$RAIZ/data/icons/hicolor" -type f \( -name '*.svg' -o -name '*.png' \) -print0 2>/dev/null)
     fi
     if (( ! instalado_icono )); then
@@ -431,6 +640,7 @@ LANZADOR
                 chown -R "$USUARIO": "${DIR_EXTENSIONES}/${uuid}"
                 ok "Propietario ajustado a $USUARIO."
             fi
+            comprobar_version_gnome "$uuid"
             info "Para activarla:  gnome-extensions enable $uuid"
             info "En Wayland hace falta cerrar y abrir sesion (no vale Alt+F2 r)."
         fi
@@ -440,29 +650,83 @@ LANZADOR
 }
 
 # ---------------------------------------------------------------------------
+#  Caches del escritorio
+#
+#  Esto tiene que correr SIEMPRE que se haya instalado de verdad, y no solo
+#  con --con-udev.  La cache de iconos no se actualiza sola: sin regenerarla,
+#  GNOME Shell sigue leyendo el indice viejo y la aplicacion sale SIN ICONO en
+#  la rejilla aunque el PNG este en su sitio y GTK lo encuentre por busqueda
+#  directa.  Se llama DESPUES de copiar los iconos, nunca antes.
+#
+#  BUG ARREGLADO: este bloque estaba dentro de recargar(), detras del
+#  'return 0' del modo polkit -- que es el modo POR DEFECTO.  Es decir, en la
+#  instalacion normal no se ejecutaba nunca y el icono no aparecia.
+# ---------------------------------------------------------------------------
+refrescar_caches() {
+    # En Arch /usr/bin/gtk-update-icon-cache es un enlace a
+    # gtk4-update-icon-cache (paquete gtk-update-icon-cache): basta con
+    # llamar al primero que exista, llamar a los dos es redundante.
+    local cache_iconos=""
+    if command -v gtk-update-icon-cache >/dev/null; then
+        cache_iconos=gtk-update-icon-cache
+    elif command -v gtk4-update-icon-cache >/dev/null; then
+        cache_iconos=gtk4-update-icon-cache
+    fi
+    if [[ -n "$cache_iconos" ]]; then
+        if "$cache_iconos" -f -t -q "$DIR_ICONOS" 2>/dev/null; then
+            ok "cache de iconos regenerada ($cache_iconos)"
+        else
+            aviso_contado "no se pudo regenerar la cache de iconos"
+        fi
+    else
+        aviso_contado "falta gtk-update-icon-cache: el icono puede no aparecer."
+        aviso_contado "    sudo pacman -S gtk-update-icon-cache"
+    fi
+
+    if command -v update-desktop-database >/dev/null; then
+        update-desktop-database -q "$DIR_DESKTOP" 2>/dev/null \
+            && ok "base de datos de aplicaciones actualizada" || true
+    fi
+    if [[ -d "$DIR_ESQUEMAS" ]] && command -v glib-compile-schemas >/dev/null; then
+        glib-compile-schemas "$DIR_ESQUEMAS" 2>/dev/null \
+            && ok "esquemas de GSettings compilados" || true
+    fi
+    # Nunca devuelve error: ninguna de estas caches es motivo para dar la
+    # instalacion por fallida, y con 'set -e' un return != 0 la tumbaria.
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 #  Recargas (solo instalacion real)
 # ---------------------------------------------------------------------------
 recargar() {
-    titulo "6. Aplicando permisos"
+    titulo "6. Aplicando permisos y refrescando caches"
 
     if [[ -n "$DESTDIR" ]]; then
-        info "DESTDIR activo: no se recarga udev, ni tmpfiles, ni /sys."
+        info "DESTDIR activo: no se recarga udev, ni tmpfiles, ni caches, ni /sys."
         return 0
     fi
 
     if [[ "$(id -u)" -ne 0 ]]; then
         aviso_contado "Sin root no se puede recargar. Hazlo a mano:"
-        aviso_contado "    sudo udevadm control --reload"
-        aviso_contado "    sudo udevadm trigger --action=change --subsystem-match=platform-profile --subsystem-match=powercap --subsystem-match=wmi"
-        aviso_contado "    sudo systemd-tmpfiles --create $FICHERO_TMPFILES"
+        aviso_contado "    sudo gtk-update-icon-cache -f -t $DIR_ICONOS"
+        aviso_contado "    sudo update-desktop-database $DIR_DESKTOP"
+        if (( CON_UDEV )); then
+            aviso_contado "    sudo udevadm control --reload"
+            aviso_contado "    sudo udevadm trigger --action=change --subsystem-match=platform-profile --subsystem-match=powercap --subsystem-match=wmi"
+            aviso_contado "    sudo systemd-tmpfiles --create ${DIR_TMPFILES}/${FICHERO_TMPFILES}"
+        fi
         return 0
     fi
 
     if (( ! CON_UDEV )); then
         # En modo polkit no se instala ninguna regla ni tmpfiles, asi que no
         # hay nada que recargar: intentarlo solo produce un error confuso
-        # ("Failed to read /usr/lib/tmpfiles.d/nitro-gekko.conf").
+        # ("Failed to read /usr/lib/tmpfiles.d/nitro-gekko.conf").  Las caches
+        # del escritorio SI hay que refrescarlas, y por eso ya no se sale de
+        # la funcion aqui.
         info "Modo polkit: no hay reglas de permisos que recargar."
+        refrescar_caches
         return 0
     fi
 
@@ -498,17 +762,9 @@ recargar() {
         aviso_contado "    sudo systemd-tmpfiles --create ${DIR_TMPFILES}/${FICHERO_TMPFILES}"
     fi
 
-    if command -v update-desktop-database >/dev/null; then
-        update-desktop-database -q "$DIR_DESKTOP" 2>/dev/null || true
-    fi
-    if command -v gtk4-update-icon-cache >/dev/null; then
-        gtk4-update-icon-cache -qtf "$DIR_ICONOS" 2>/dev/null || true
-    fi
-    if [[ -d "$DIR_ESQUEMAS" ]] && command -v glib-compile-schemas >/dev/null; then
-        glib-compile-schemas "$DIR_ESQUEMAS" 2>/dev/null || true
-    fi
+    refrescar_caches
 
-    titulo "7. Permisos resultantes"
+    titulo "7. Permisos resultantes de /sys"
     local ruta
     for ruta in "${RUTAS_SYSFS[@]}"; do
         if [[ -e "$ruta" ]]; then
@@ -538,8 +794,16 @@ desinstalar() {
     titulo "Desinstalando $APP_NOMBRE"
     [[ -n "$DESTDIR" ]] && info "DESTDIR = $DESTDIR"
 
+    # OJO con la lista: tiene que cubrir TODO lo que instala instalar(), en
+    # los dos modos.  La politica polkit faltaba, y al desinstalar quedaba
+    # /usr/share/polkit-1/actions/org.thegekko.nitrogekko.policy registrando
+    # una accion cuyo ejecutable (/usr/lib/nitro-gekko/nitro-gekko-helper) ya
+    # no existia -- mientras el script decia "Desinstalado por completo".
+    # El helper no hace falta nombrarlo: vive dentro de $DIR_APP, que se borra
+    # entero mas abajo.
     local objetivo
     for objetivo in \
+        "$DIR_POLKIT/$FICHERO_POLICY" \
         "$DIR_UDEV/$FICHERO_UDEV" \
         "$DIR_TMPFILES/$FICHERO_TMPFILES" \
         "$DIR_BIN/$APP_BIN" \
@@ -619,26 +883,50 @@ desinstalar() {
     # icono seguian saliendo en el lanzador de aplicaciones (apuntando a un
     # binario que ya no existe) hasta que otro paquete regenerase las caches.
     if [[ -z "$DESTDIR" && "$(id -u)" -eq 0 ]]; then
-        if command -v update-desktop-database >/dev/null; then
-            update-desktop-database -q "$DIR_DESKTOP" 2>/dev/null || true
+        refrescar_caches
+    fi
+
+    # Comprobacion final: no basta con fiarse de los avisos, se mira el disco.
+    # Si queda algo, el codigo de salida lo dice (importante para un script que
+    # llame a esto y de la desinstalacion por buena).
+    local restos=()
+    local objetivo2
+    for objetivo2 in \
+        "$DIR_POLKIT/$FICHERO_POLICY" \
+        "$DIR_UDEV/$FICHERO_UDEV" \
+        "$DIR_TMPFILES/$FICHERO_TMPFILES" \
+        "$DIR_BIN/$APP_BIN" \
+        "$DIR_DESKTOP/${APP_ID}.desktop" \
+        "$DIR_ESQUEMAS/${APP_ID}.gschema.xml" \
+        "$DIR_APP"
+    do
+        if [[ -e "${DESTDIR}${objetivo2}" ]]; then
+            restos+=("$objetivo2")
         fi
-        if command -v gtk4-update-icon-cache >/dev/null; then
-            gtk4-update-icon-cache -qtf "$DIR_ICONOS" 2>/dev/null || true
-        fi
-        if [[ -d "$DIR_ESQUEMAS" ]] && command -v glib-compile-schemas >/dev/null; then
-            glib-compile-schemas "$DIR_ESQUEMAS" 2>/dev/null || true
-        fi
-        ok "Caches del escritorio actualizadas."
+    done
+    if [[ -d "${DESTDIR}${DIR_ICONOS}" ]]; then
+        while IFS= read -r -d '' sobra; do
+            restos+=("${sobra#"$DESTDIR"}")
+        done < <(find "${DESTDIR}${DIR_ICONOS}" -type f \
+                 \( -name "${APP_ID}.*" -o -name "${APP_ID}-*" \) -print0 2>/dev/null)
     fi
 
     printf '\n'
+    if (( ${#restos[@]} )); then
+        error "Ha quedado sin borrar:"
+        local r
+        for r in "${restos[@]}"; do error "    $r"; done
+        error "Si son ficheros de /usr, repite con sudo."
+        info "Si la extension estaba activa, cierra y abre sesion."
+        return 1
+    fi
     if (( HUBO_AVISOS )); then
-        aviso "Desinstalacion terminada con $HUBO_AVISOS aviso(s): ha quedado algo sin borrar."
-        aviso "Repasa la lista de arriba; si son ficheros de /usr, repite con sudo."
+        aviso "Desinstalacion terminada con $HUBO_AVISOS aviso(s), pero no queda ningun fichero."
     else
         ok "Desinstalado por completo."
     fi
     info "Si la extension estaba activa, cierra y abre sesion."
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -646,37 +934,66 @@ desinstalar() {
 # ---------------------------------------------------------------------------
 ayuda() {
     cat <<AYUDA
-$APP_NOMBRE - instalador
+$APP_NOMBRE - instalador de la aplicacion
+
+  Instala el codigo, el lanzador, el icono, la extension de GNOME Shell, el
+  helper privilegiado y la politica polkit.  El HARDWARE (modulo acer_wmi o
+  linuwu_sense, limite de PL1, power-profiles-daemon, atajo del boton de la
+  marca) lo prepara otro script:  sudo ./packaging/preparar-sistema.sh
 
   Uso:
-    sudo $0                      Instala en el sistema
-    sudo $0 --uninstall          Desinstala
-    DESTDIR=/ruta $0             Instala en un arbol falso (sin root, sin tocar nada)
-    sudo $0 --con-udev           Instala Y abre /sys al grupo 'wheel'
-                                 (sin dialogo de contrasena; menos seguro)
-    $0 --help                    Esta ayuda
+    sudo $0
+        Instala en el sistema.  Modo polkit: /sys sigue siendo de root y cada
+        cambio pasa por el helper, que pide la contrasena una vez por sesion.
+
+    sudo $0 --con-udev
+        Instala y ademas abre seis rutas de /sys al grupo 'wheel'.  Sin
+        dialogo de contrasena, pero cualquier proceso tuyo puede escribir ahi.
+
+    sudo $0 --uninstall
+        Desinstala todo lo que puso, y lo comprueba fichero a fichero.
+
+    DESTDIR=/ruta $0
+        Construye el arbol de ficheros en /ruta.  Sin root y sin tocar nada
+        del sistema: es la forma de ver que va a instalar antes de dejarlo.
+
+    $0 --help
+        Esta ayuda.
 
   Variables:
     DESTDIR    Prefijo de destino para pruebas o para empaquetar. Si esta
-               puesto, NO se recarga udev ni tmpfiles ni se toca /sys.
+               puesto, NO se recarga udev, ni tmpfiles, ni las caches del
+               escritorio, ni se toca /sys.
     PREFIX     Prefijo de instalacion. Por omision /usr.
     DIR_DMI    Directorio de identificacion del equipo. Por omision
                /sys/class/dmi/id. Solo sirve para probar el aviso de
                hardware no compatible sin tener otro portatil delante.
 
-  Que instala:
-    ${DIR_UDEV}/${FICHERO_UDEV}
-    ${DIR_TMPFILES}/${FICHERO_TMPFILES}
-    ${DIR_APP}/gekkonitro/
-    ${DIR_BIN}/${APP_BIN}
-    ${DIR_DESKTOP}/${APP_ID}.desktop
-    ${DIR_ICONOS}/<tamano>/apps/${APP_ID}.*
-    ${DIR_ESQUEMAS}/${APP_ID}.gschema.xml   (si existe)
-    \$HOME/.local/share/gnome-shell/extensions/<uuid>/
+  Que instala SIEMPRE  (todo root:root; los modos entre parentesis):
+    0755  ${DIR_APP}/${FICHERO_HELPER}
+          el unico que corre como root, invocado por pkexec
+    0644  ${DIR_POLKIT}/${FICHERO_POLICY}
+    0644  ${DIR_APP}/gekkonitro/*.py       (directorios 0755)
+    0755  ${DIR_BIN}/${APP_BIN}
+    0644  ${DIR_DESKTOP}/${APP_ID}.desktop
+    0644  ${DIR_ICONOS}/<tamano>/apps/${APP_ID}.*
+    0644  ${DIR_ESQUEMAS}/${APP_ID}.gschema.xml   (si existe)
+          \$HOME/.local/share/gnome-shell/extensions/<uuid>/   (del usuario)
 
-  Los dos primeros dan escritura al grupo 'wheel' sobre seis rutas de /sys.
-  Lee packaging/SEGURIDAD.md antes de instalarlo: explica exactamente que se
+  Que instala SOLO con --con-udev:
+    0644  ${DIR_UDEV}/${FICHERO_UDEV}
+    0644  ${DIR_TMPFILES}/${FICHERO_TMPFILES}
+
+  Esos dos ultimos son los que dan escritura al grupo 'wheel' sobre seis rutas
+  de /sys, y por eso NO se instalan por defecto: sin ellos cualquier cambio
+  pasa por el helper y por el dialogo de contrasena de GNOME.  Lee
+  packaging/SEGURIDAD.md antes de usar --con-udev: explica exactamente que se
   abre y que puede hacer con ello un proceso que corra como tu usuario.
+
+  Codigos de salida:
+    0  todo instalado (puede haber avisos informativos)
+    1  falto algo por instalar o por borrar, o falta root
+    2  opcion desconocida
 AYUDA
 }
 
@@ -712,7 +1029,7 @@ main() {
             exit 1
         fi
         desinstalar
-        exit 0
+        exit $?
     fi
 
     # Root obligatorio solo si se va a tocar el sistema de verdad.
@@ -731,6 +1048,12 @@ main() {
     recargar
 
     titulo "Resumen"
+    if (( HUBO_ERRORES )); then
+        error "Terminado con $HUBO_ERRORES error(es): hay ficheros que NO se han instalado."
+        error "Revisa el espacio libre y los permisos del destino y vuelve a lanzarlo."
+        (( HUBO_AVISOS )) && aviso "Ademas hubo $HUBO_AVISOS aviso(s)."
+        return 1
+    fi
     if (( HUBO_AVISOS )); then
         aviso "Terminado con $HUBO_AVISOS aviso(s). Leelos antes de dar por bueno esto."
     else
@@ -738,10 +1061,11 @@ main() {
     fi
     if [[ -z "$DESTDIR" ]]; then
         info "Lanza la aplicacion con: $APP_BIN"
-        info "Si el limite de carga de bateria sale como no disponible tras"
-        info "reiniciar, fuerza la carga temprana del modulo:"
-        info "    echo acer_wmi_battery | sudo tee /etc/modules-load.d/acer-wmi-battery.conf"
+        info "Si algo del hardware sale como no disponible (perfiles, RPM,"
+        info "limite de carga de bateria), preparalo con:"
+        info "    sudo ./packaging/preparar-sistema.sh"
     fi
+    return 0
 }
 
 main "$@"

@@ -4,9 +4,25 @@
 #  rutas de sysfs que la aplicacion necesita modificar.
 #  Destino: /usr/lib/udev/rules.d/99-nitro-gekko.rules
 #
-#  Lee packaging/SEGURIDAD.md antes de instalar esto. Resumen: se abre
-#  escritura de grupo sobre 4 atributos de sysfs. No se abre NINGUNA lectura
-#  nueva (en particular energy_uj sigue siendo 0400 root, por PLATYPUS).
+#  ESTE FICHERO NO SE INSTALA POR DEFECTO. El modo por defecto de Nitro Gekko
+#  es POLKIT: un helper que corre como root bajo demanda y deja /sys en
+#  0644 root:root. Estas reglas solo se copian con
+#
+#      sudo ./packaging/install.sh --con-udev
+#
+#  y lo que hacen es RELAJAR PERMISOS: abren escritura de grupo sobre 4
+#  atributos de sysfs (los otros 2 de la lista los pone packaging/
+#  nitro-gekko.conf, el tmpfiles.d; en total SEIS). A cambio de no pedir
+#  contrasena, cualquier proceso que corra con tu uid puede escribir ahi en
+#  silencio. Lee packaging/SEGURIDAD.md, parte 2, ANTES de instalarlo.
+#
+#  Las rutas del teclado RGB y del EC (four_zone_mode, per_zone_mode,
+#  backlight_timeout, usb_charging, battery_calibration, boot_animation_sound)
+#  NO estan aqui a proposito: siguen pasando por pkexec incluso en este modo,
+#  porque battery_calibration dispara un ciclo completo de la bateria.
+#
+#  No se abre NINGUNA lectura nueva; en particular energy_uj sigue siendo
+#  0400 root, por PLATYPUS (CVE-2020-8694).
 # ============================================================================
 #
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ lanzan una excepcion hacia la UI.
 Costes medidos en la maquina (mediana de 20 lecturas, time.perf_counter):
     fan1_input .......................  0.114 ms
     coretemp temp1_input .............  0.009 ms
-    BAT1/capacity ....................  0.008 ms
+    <bateria>/capacity ...............  0.008 ms
     rapl constraint_0_power_limit_uw .  0.011 ms
     cpufreq x16 ......................  0.153 ms
     acer-wmi-battery/temperature .....  5.097 ms  <- llamada WMI/ACPI real
@@ -19,6 +19,20 @@ ficheros baratos, y `leer_lento()` (0,1 Hz) agrupa las tres lecturas ACPI caras.
 El contrato del proyecto sugeria releer el perfil en el bucle de 1 Hz; al medirlo
 resulta ser la lectura MAS cara de todas, asi que va al ciclo lento (y se relee
 al instante despues de que escribamos nosotros el perfil).
+
+Coste de las tres funciones publicas, medido con time.perf_counter (mediana de
+15 llamadas seguidas, maquina en reposo):
+
+    leer_rapido() ...   0,6 ms         -> ciclo de 1 Hz
+    leer_lento() ....  10,0 ms         -> ciclo de 10 s
+    leer_teclado() ..  47 a 53 ms      -> SOLO al abrir la pagina y tras un cambio
+
+El desglose de leer_teclado() explica el numero: per_zone_mode 25,5 ms,
+usb_charging 7,1 ms, four_zone_mode 5,1 ms, backlight_timeout 5,1 ms,
+boot_animation_sound 5,0 ms; suman 47,8 ms.  Cada uno es una llamada WMI real
+al firmware.  Por eso `leer_teclado()` NO se llama nunca desde un temporizador:
+los unicos dos sitios que la invocan son la construccion de la pagina de
+teclado y el refresco posterior a una escritura del usuario.
 """
 
 from __future__ import annotations
@@ -47,15 +61,19 @@ PERFIL_CHOICES = Path("/sys/class/platform-profile/platform-profile-0/choices")
 PL1_MSR = Path("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw")
 #: PL1 por MMIO: el firmware lo reescribe al cambiar de perfil (gotcha 4).
 PL1_MMIO = Path("/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw")
-PL2_MSR = Path("/sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw")
 PL_MAX = Path("/sys/class/powercap/intel-rapl:0/constraint_0_max_power_uw")
 
 HEALTH_MODE = Path("/sys/bus/wmi/drivers/acer-wmi-battery/health_mode")
 TEMP_BATERIA = Path("/sys/bus/wmi/drivers/acer-wmi-battery/temperature")
 NO_TURBO = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")
 
-BAT_CAPACIDAD = Path("/sys/class/power_supply/BAT1/capacity")
-BAT_ESTADO = Path("/sys/class/power_supply/BAT1/status")
+#: Directorio de las fuentes de alimentacion.  El nodo de LA bateria del
+#: portatil se resuelve por contenido, NO por nombre: aqui se llama ``BAT1``,
+#: pero el nombre lo pone el firmware ACPI y en otros equipos es ``BAT0``.
+#: Ademas cuelgan aqui las baterias de los perifericos (un raton inalambrico
+#: aparece como ``hidpp_battery_0`` con ``type=Battery``), que se descartan
+#: por ``scope=Device``.  Ver ``_bateria_base()``.
+POWER_SUPPLY = Path("/sys/class/power_supply")
 
 CPUFREQ_GLOB = "/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq"
 
@@ -71,21 +89,30 @@ RGB_EFECTO = ACER_WMI / "four_zoned_kb" / "four_zone_mode"
 RGB_ZONAS = ACER_WMI / "four_zoned_kb" / "per_zone_mode"
 RETRO_TIMEOUT = ACER_WMI / "nitro_sense" / "backlight_timeout"
 USB_CARGA = ACER_WMI / "nitro_sense" / "usb_charging"
-CALIBRACION = ACER_WMI / "nitro_sense" / "battery_calibration"
 SONIDO_ARRANQUE = ACER_WMI / "nitro_sense" / "boot_animation_sound"
 
-#: Los 8 efectos que acepta four_zone_mode, con su nombre en espanol y si
-#: necesitan direccion o color. Tomados del driver y de su documentacion.
+# battery_calibration existe en el driver y el helper la acepta, pero la
+# aplicacion NO la expone ni la lee: arrancar un ciclo de calibracion descarga
+# y recarga la bateria entera durante horas, y no es algo que deba quedar a un
+# clic de distancia en una lista de interruptores.  Leerla costaba ademas 4,9 ms
+# de WMI en cada refresco del teclado sin que nadie mirase el resultado.
+
+#: Los 8 efectos que acepta four_zone_mode, con su nombre en espanol y que
+#: parametros usa cada uno.  NO estan copiados de ninguna documentacion: salen
+#: del switch de four_zoned_rgb_kb_store() en rgb/src/linuwu_sense.c, que es
+#: quien pone a cero los parametros que el modo no usa antes de mandarlos al
+#: firmware.  Por eso «Onda cian» no salia cian: el driver borra el color en el
+#: modo 3 (comprobado: se escribio 0,229,255 y four_zone_mode devuelve 0,0,0).
 #: (id, nombre, usa_color, usa_direccion, usa_velocidad)
 EFECTOS_RGB = (
-    (0, "Fijo",           True,  False, False),
-    (1, "Respiracion",    True,  False, True),
-    (2, "Neon",           False, False, True),
-    (3, "Onda",           False, True,  True),
-    (4, "Desplazamiento", True,  True,  True),
-    (5, "Zoom",           True,  False, True),
-    (6, "Meteorito",      True,  False, True),
-    (7, "Destellos",      True,  False, True),
+    (0, "Fijo",           True,  False, False),  # speed=0, direction=0
+    (1, "Respiracion",    True,  False, False),  # speed=0, direction=0
+    (2, "Neon",           False, False, True),   # rgb=0, direction=0
+    (3, "Onda",           False, True,  True),   # rgb=0, exige direction>0
+    (4, "Desplazamiento", True,  True,  True),   # sin restricciones
+    (5, "Zoom",           True,  False, True),   # direction=0
+    (6, "Meteorito",      True,  False, True),   # direction=0
+    (7, "Destellos",      True,  False, True),   # direction=0
 )
 
 #: Presets listos para usar. El usuario pidio "formas bonitas" ya hechas
@@ -96,7 +123,9 @@ PRESETS_RGB = {
     "Gekko":         ("zonas",  "22d3ee,4ade80,4ade80,f472b6,100"),
     "Hielo":         ("zonas",  "00e5ff,0091ff,0091ff,00e5ff,100"),
     "Magma":         ("zonas",  "ff2d00,ff7300,ffb300,ff2d00,100"),
-    "Onda cian":     ("efecto", "3,4,100,1,0,229,255"),
+    # El modo 3 ignora el RGB (lo pone a cero el driver), asi que ni se
+    # manda un color ni se promete uno en el nombre.
+    "Onda":          ("efecto", "3,4,100,1,0,0,0"),
     "Respiracion":   ("efecto", "1,3,100,0,138,43,226"),
     "Meteorito":     ("efecto", "6,5,100,0,255,0,128"),
     "Destellos":     ("efecto", "7,4,100,0,255,255,255"),
@@ -104,9 +133,6 @@ PRESETS_RGB = {
     "Blanco fijo":   ("efecto", "0,0,100,0,255,255,255"),
     "Apagado":       ("efecto", "0,0,0,0,0,0,0"),
 }
-
-#: Segundos entre lecturas del ciclo lento (ACPI caro).
-PERIODO_LENTO = 10.0
 
 #: RPM tipicas medidas por perfil.  Se muestran en la UI como referencia.
 RPM_TIPICAS = {
@@ -152,6 +178,8 @@ class Resultado:
     via: str = "ninguno"
 
     def __bool__(self) -> bool:
+        # Sin esto `if resultado:` seria SIEMPRE cierto (un objeto normal es
+        # verdadero), que es justo el error que este tipo existe para evitar.
         return self.ok
 
 
@@ -164,22 +192,24 @@ class EstadoRapido:
     temp_paquete: float | None = None
     pl1_msr_w: float | None = None
     pl1_mmio_w: float | None = None
-    pl2_w: float | None = None
     no_turbo: bool | None = None
     bat_capacidad: int | None = None
     bat_estado: str | None = None
     health_mode: bool | None = None
     freq_media_mhz: float | None = None
-    #: Coste real de esta lectura, en milisegundos (se muestra en la UI).
+    #: Coste real de esta lectura, en milisegundos.  NO se muestra en la
+    #: interfaz: esta para poder medir el bucle desde una consola sin tener que
+    #: instrumentar nada, y es lo que respalda los numeros de la cabecera.
     coste_ms: float = 0.0
 
 
 @dataclass(slots=True)
 class EstadoLento:
-    """Instantanea cara (ACPI/WMI), se refresca cada PERIODO_LENTO segundos."""
+    """Instantanea cara (ACPI/WMI), se refresca cada 10 s."""
 
     perfil: str | None = None
     temp_bateria: float | None = None
+    #: Igual que en EstadoRapido: medicion interna, no se muestra.
     coste_ms: float = 0.0
 
 
@@ -197,7 +227,6 @@ class EstadoTeclado:
     #: True = la retroiluminacion se apaga sola tras 30 s de inactividad.
     retro_timeout: bool | None = None
     usb_carga: int | None = None
-    calibracion: bool | None = None
     sonido_arranque: bool | None = None
 
 
@@ -211,6 +240,26 @@ class Diagnostico:
 
     @property
     def utilizable(self) -> bool:
+        """¿Merece la pena abrir la interfaz?
+
+        SOLO depende del perfil de plataforma.  Antes tambien exigia el hwmon
+        'acer' (`hay_perfil and hay_hwmon_acer`), y eso era demasiado duro para
+        cualquiera que no tenga exactamente este portatil: en un Acer donde el
+        driver registre `platform_profile` pero NO los tacometros -otro modelo,
+        un quirk sin hwmon, un `acer_wmi` mas antiguo- la aplicacion se negaba
+        entera con «Hardware no compatible», escondiendo el perfil termico, el
+        PL1, el Turbo, la bateria y las temperaturas, que funcionan
+        perfectamente sin un solo ventilador leido.
+
+        Sin RPM lo unico que se pierde son dos filas y una grafica, y esas ya
+        saben ensenar «—» cuando no hay dato.  El aviso se da igual: sigue en
+        `faltantes` y la ventana lo enseña al abrirse.
+        """
+        return self.hay_perfil
+
+    @property
+    def completo(self) -> bool:
+        """Todo el hardware esperado, tacometros incluidos."""
         return self.hay_perfil and self.hay_hwmon_acer
 
 
@@ -236,6 +285,53 @@ def _leer_int(ruta: Path | str) -> int | None:
         return int(texto.split()[0])
     except (ValueError, IndexError):
         return None
+
+
+#: Cache del nodo de la bateria: el nombre no cambia mientras el equipo este
+#: encendido, y recorrer el directorio en cada refresco de 1 Hz seria tonto.
+_BATERIA_CACHE: Path | None = None
+
+
+def _bateria_base(refrescar: bool = False) -> Path | None:
+    """Nodo de sysfs de la bateria interna del portatil, o None si no hay.
+
+    NO se codifica ``BAT1``.  Ese es el nombre que le da el firmware ACPI de
+    este equipo; el del portatil de al lado puede ser ``BAT0``, y con la ruta
+    cableada la aplicacion se quedaba sin porcentaje ni estado de carga sin
+    decir por que.
+
+    Se descartan dos cosas:
+
+    * ``type != Battery`` (el cargador aparece como ``ACAD``, ``type=Mains``).
+    * ``scope == Device``: asi es como el kernel marca la bateria de un
+      PERIFERICO.  Comprobado en esta maquina, donde un raton Logitech expone
+      ``hidpp_battery_0`` con ``type=Battery`` y ``capacity=58``; sin este
+      filtro la aplicacion habria acabado ensenando la bateria del raton.
+
+    Se prefieren los nodos llamados ``BAT*``, que es la convencion ACPI para
+    la bateria del propio equipo.
+    """
+    global _BATERIA_CACHE
+    if not refrescar and _BATERIA_CACHE is not None and _BATERIA_CACHE.exists():
+        return _BATERIA_CACHE
+    try:
+        nodos = sorted(POWER_SUPPLY.iterdir())
+    except OSError:
+        return None
+
+    def valida(d: Path) -> bool:
+        if _leer_texto(d / "type") != "Battery":
+            return False
+        if _leer_texto(d / "scope") == "Device":
+            return False
+        return (d / "capacity").exists()
+
+    for preferido in (True, False):
+        for d in nodos:
+            if d.name.startswith("BAT") is preferido and valida(d):
+                _BATERIA_CACHE = d
+                return d
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -300,16 +396,37 @@ class ControlNitro:
         diag = Diagnostico()
         diag.hay_perfil = PERFIL_CHOICES.exists() or PERFIL_LEGACY.exists()
         if not diag.hay_perfil:
+            # OJO: la causa casi nunca es 'acpi=off' ni un kernel viejo, que es
+            # lo que decia el mensaje anterior y no llevaba a ninguna parte.  En
+            # un Acer recien instalado la causa es que NO HAY DRIVER DE
+            # PLATAFORMA cargado: el AN17-51 no esta en la tabla de quirks DMI
+            # del acer-wmi de mainline, asi que sin predator_v4=1 -o sin
+            # linuwu_sense- el driver no registra platform_profile.  Ese es
+            # justo el trabajo de los dos scripts que se nombran aqui.
             diag.faltantes.append(
-                "No existe /sys/firmware/acpi/platform_profile. El firmware ACPI "
-                "no expone perfiles de plataforma: comprueba que arrancas con un "
-                "kernel reciente y sin 'acpi=off'."
+                "No existe /sys/firmware/acpi/platform_profile, asi que no hay "
+                "perfiles termicos que cambiar. Casi siempre es que falta el "
+                "driver de plataforma: preparalo con "
+                "'sudo ./packaging/preparar-sistema.sh' (acer_wmi con "
+                "predator_v4=1) o con 'sudo ./packaging/instalar-rgb.sh' "
+                "(linuwu_sense, que ademas da el teclado RGB). Comprueba "
+                "despues con 'cat /sys/firmware/acpi/platform_profile_choices' "
+                "y 'dmesg | grep -i acer'. Si tu equipo no es un Acer, este "
+                "programa no tiene nada que controlar aqui."
             )
         diag.hay_hwmon_acer = self.ruta_hwmon_acer() is not None
         if not diag.hay_hwmon_acer:
+            # OJO: en este proyecto el hwmon 'acer' lo publica linuwu_sense, y
+            # acer_wmi esta en la lista negra precisamente para dejarle sitio.
+            # Decir aqui «modprobe acer_wmi» mandaba al usuario a cargar el
+            # modulo equivocado.
             diag.faltantes.append(
-                "No hay ningun hwmon llamado 'acer'. Carga el modulo con "
-                "'sudo modprobe acer_wmi' y revisa 'dmesg | grep acer'."
+                "No hay ningun hwmon llamado 'acer', asi que no se pueden leer "
+                "las RPM de los ventiladores. Instala el driver del proyecto con "
+                "'sudo ./packaging/instalar-rgb.sh' y comprueba con "
+                "'lsmod | grep linuwu' y 'dmesg | grep -i acer'. Si usas el "
+                "acer_wmi del kernel en vez de linuwu_sense, quitalo de la lista "
+                "negra y cargalo con 'sudo modprobe acer_wmi'."
             )
         return diag
 
@@ -352,7 +469,6 @@ class ControlNitro:
         for atributo, ruta in (
             ("pl1_msr_w", PL1_MSR),
             ("pl1_mmio_w", PL1_MMIO),
-            ("pl2_w", PL2_MSR),
         ):
             crudo = _leer_int(ruta)
             if crudo is not None:
@@ -362,8 +478,10 @@ class ControlNitro:
         if crudo is not None:
             est.no_turbo = bool(crudo)
 
-        est.bat_capacidad = _leer_int(BAT_CAPACIDAD)
-        est.bat_estado = _leer_texto(BAT_ESTADO)
+        bat = _bateria_base()
+        if bat is not None:
+            est.bat_capacidad = _leer_int(bat / "capacity")
+            est.bat_estado = _leer_texto(bat / "status")
 
         crudo = _leer_int(HEALTH_MODE)
         if crudo is not None:
@@ -398,10 +516,45 @@ class ControlNitro:
             return None
         return sum(valores) / len(valores) / 1000.0
 
-    def pl1_maximo_w(self) -> float:
-        """Maximo nominal declarado por el chip (45 W en el i7-13620H)."""
+    def pl1_maximo_w(self) -> float | None:
+        """Potencia base declarada por el chip, o None si no se puede leer.
+
+        Devuelve None A PROPOSITO cuando no hay RAPL de Intel (un Acer con CPU
+        AMD) o cuando ``constraint_0_max_power_uw`` no existe.  Antes devolvia
+        45.0 como respaldo, que es la cifra de ESTE portatil (i7-13620H): en
+        cualquier otro equipo la interfaz afirmaba «Tu chip declara 45 W
+        nominales» sin haber leido nada.  Un numero inventado presentado como
+        lectura es peor que no dar numero.
+        """
         crudo = _leer_int(PL_MAX)
-        return crudo / 1_000_000.0 if crudo else 45.0
+        return crudo / 1_000_000.0 if crudo else None
+
+    # -- que partes del hardware existen en ESTE equipo ---------------------
+    #
+    # El AN17-51 las tiene todas, asi que en la maquina del autor estas tres
+    # funciones devuelven siempre True.  En otro Acer no: intel_pstate no
+    # existe con CPU AMD ni arrancando con 'intel_pstate=disable', y
+    # acer-wmi-battery es un DKMS del AUR que el README declara OPCIONAL.
+    #
+    # La interfaz las necesita para desactivar el control en vez de ensenarlo
+    # apagado: sin esto, el interruptor se movia al pulsarlo, no se escribia
+    # nada, no salia ningun aviso y el usuario se quedaba creyendo que habia
+    # cambiado algo.  Ver el comentario de _grupo_potencia en window.py.
+
+    @staticmethod
+    def hay_pl1() -> bool:
+        """¿Existe el PL1 por MSR? (RAPL de Intel presente)"""
+        return PL1_MSR.exists()
+
+    @staticmethod
+    def hay_turbo() -> bool:
+        """¿Existe intel_pstate/no_turbo?"""
+        return NO_TURBO.exists()
+
+    @staticmethod
+    def hay_salud_bateria() -> bool:
+        """¿Esta cargado el DKMS acer-wmi-battery?"""
+        return HEALTH_MODE.exists()
 
     # -- escrituras ---------------------------------------------------------
 
@@ -431,10 +584,13 @@ class ControlNitro:
         argumento, y eso era un agujero de escalada de privilegios: cualquier
         proceso que corriese como el usuario podia pedirle que escribiera como
         root en cualquier fichero.  Ahora cruza la frontera de privilegio solo
-        un NOMBRE DE ACCION de un conjunto cerrado («perfil», «pl1»,
-        «bateria», «turbo») y su valor; la lista blanca de rutas vive dentro
-        del helper.  Si una escritura no tiene accion asociada, simplemente no
-        hay camino privilegiado para ella.
+        un NOMBRE DE ACCION de un conjunto cerrado de diez («perfil»,
+        «pl1», «bateria», «turbo», «rgb_efecto», «rgb_zonas»,
+        «retro_timeout», «usb_carga», «calibracion», «sonido_arranque») y su
+        valor; la lista blanca de rutas vive dentro del helper.  Si una
+        escritura no tiene accion asociada, simplemente no hay camino
+        privilegiado para ella: se intenta directa y, si no hay permiso, se
+        devuelve un error claro.
 
         SOBRE *al_terminar*
         -------------------
@@ -560,22 +716,6 @@ class ControlNitro:
 
         return ejecutar()
 
-    def como_se_escribiria(self, ruta: Path) -> str:
-        """Diagnostico SIN escribir: dice que via se usaria para esa ruta.
-
-        Se usa en las pruebas y para el tooltip de la UI, de modo que no haga
-        falta tocar sysfs para saber si la app podra actuar.
-        """
-        if not ruta.exists():
-            return "imposible: la ruta no existe"
-        if os.access(ruta, os.W_OK):
-            return "directo"
-        if self._helper() is None:
-            return "imposible: sin permiso y sin helper instalado"
-        if shutil.which("pkexec") is None:
-            return "imposible: sin permiso y sin pkexec"
-        return "pkexec"
-
     def escribir_perfil(
         self, perfil: str, al_terminar: Callable[[Resultado], None] | None = None
     ) -> Resultado:
@@ -610,39 +750,63 @@ class ControlNitro:
         las lecturas (gotcha 4).
         """
         uw = str(int(round(vatios * 1_000_000)))
-        principal = self._escribir(
-            PL1_MSR,
-            uw,
-            "el PL1 del MSR",
+
+        def completar(msr: Resultado) -> Resultado:
+            """Anade la escritura del MMIO al resultado del MSR.
+
+            Va en una funcion aparte porque tiene que aplicarse TAMBIEN al
+            resultado que viaja por el callback asincrono.  Antes el MMIO se
+            escribia despues de haber llamado ya a *al_terminar* con el
+            resultado del MSR a secas, y el Resultado combinado se devolvia
+            como valor de retorno... que `VentanaNitro._lanzar_escritura`
+            descarta.  Por la via DIRECTA (reglas udev de `--con-udev`) el
+            usuario veia «PL1 fijado a N W.» aunque el MMIO no se hubiera
+            podido escribir.  Reproducido con un MSR escribible y un MMIO en
+            modo 0444: toast «PL1 fijado a 50 W.», MMIO intacto.
+            """
+            # Por la via privilegiada el helper ya escribe MSR y MMIO de una
+            # vez, asi que no hay segunda llamada (seria un segundo dialogo de
+            # contrasena para la misma accion del usuario).
+            if msr.via == "pkexec" or not msr.ok or not ambas:
+                return msr
+            secundario = self._escribir(
+                PL1_MMIO,
+                uw,
+                "el PL1 del MMIO",
+                exito=f"PL1 fijado a {vatios:.0f} W en el MMIO.",
+            )
+            if not secundario.ok:
+                # El MSR, que es el que manda, si se aplico: no es un fallo
+                # total, pero el usuario tiene que enterarse igual.
+                return Resultado(
+                    True,
+                    f"PL1 a {vatios:.0f} W aplicado en el MSR (el que manda); el "
+                    f"MMIO no se pudo escribir.",
+                    via=msr.via,
+                )
+            return Resultado(True, f"PL1 fijado a {vatios:.0f} W.", via=msr.via)
+
+        argumentos = dict(
             exito=f"PL1 fijado a {vatios:.0f} W.",
             accion="pl1",
             # El helper recibe VATIOS, no microvatios: su rango duro esta en
             # vatios y asi el valor que se audita en el journal es legible.
             valor_helper=str(int(round(vatios))),
-            al_terminar=al_terminar,
         )
-        # Por la via privilegiada el helper ya escribe MSR y MMIO de una vez,
-        # asi que no hay segunda llamada (seria un segundo dialogo de
-        # contrasena para la misma accion del usuario).
-        if principal.via == "pkexec":
-            return principal
-        if not principal.ok or not ambas:
-            return principal
-        secundario = self._escribir(
-            PL1_MMIO,
-            uw,
-            "el PL1 del MMIO",
-            exito=f"PL1 fijado a {vatios:.0f} W en el MMIO.",
-        )
-        if not secundario.ok:
-            # El MSR, que es el que manda, si se aplico: no es un fallo total.
-            return Resultado(
-                True,
-                f"PL1 a {vatios:.0f} W aplicado en el MSR (el que manda); el MMIO "
-                f"no se pudo escribir.",
-                via=principal.via,
+        if al_terminar is None:
+            return completar(
+                self._escribir(PL1_MSR, uw, "el PL1 del MSR", **argumentos)
             )
-        return Resultado(True, f"PL1 fijado a {vatios:.0f} W.", via=principal.via)
+        # Camino asincrono: el callback tiene que recibir el resultado
+        # COMBINADO, no el del MSR suelto.  El valor de retorno de aqui lo
+        # ignora quien llama, asi que el unico canal fiable es el callback.
+        return self._escribir(
+            PL1_MSR,
+            uw,
+            "el PL1 del MSR",
+            al_terminar=lambda r: al_terminar(completar(r)),
+            **argumentos,
+        )
 
     def escribir_health_mode(
         self, activar: bool, al_terminar: Callable[[Resultado], None] | None = None
@@ -682,10 +846,12 @@ class ControlNitro:
     def leer_teclado(self) -> EstadoTeclado:
         """Lee todo el estado del teclado y de los extras del EC.
 
-        Es una lectura CARA: cada atributo de este grupo es una llamada WMI
-        real al firmware, del mismo orden que platform_profile (~5-7 ms cada
-        una). No la metas en el bucle de 1 Hz: la pagina de iluminacion la
-        pide al abrirse y despues de cada cambio, y con eso basta.
+        Es una lectura CARA: 47 a 53 ms medidos (mediana de 25 llamadas),
+        porque cada atributo es una llamada WMI real al firmware (per_zone_mode
+        25,5 ms, usb_charging 7,1 ms, four_zone_mode 5,1 ms, backlight_timeout
+        5,1 ms, boot_animation_sound 5,0 ms).  No la metas en el bucle de 1 Hz:
+        la pagina de iluminacion la pide al abrirse y despues de cada cambio, y
+        con eso basta.
         """
         est = EstadoTeclado()
         if not self.hay_teclado_rgb():
@@ -713,8 +879,6 @@ class ControlNitro:
         v = _leer_int(RETRO_TIMEOUT)
         est.retro_timeout = None if v is None or v < 0 else bool(v)
         est.usb_carga = _leer_int(USB_CARGA)
-        v = _leer_int(CALIBRACION)
-        est.calibracion = None if v is None else bool(v)
         v = _leer_int(SONIDO_ARRANQUE)
         est.sonido_arranque = None if v is None else bool(v)
         return est

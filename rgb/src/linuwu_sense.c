@@ -7,6 +7,44 @@
  *  Based on acer_acpi:
  *    Copyright (C) 2005-2007	E.M. Smith
  *    Copyright (C) 2007-2008	Carlos Corbacho <cathectic@gmail.com>
+ *
+ *  ---------------------------------------------------------------------
+ *  OBRA DERIVADA - AVISO DE MODIFICACION (GPL-2.0-or-later, seccion 5a)
+ *  ---------------------------------------------------------------------
+ *
+ *  Este fichero NO es el acer-wmi de mainline ni el linuwu_sense original:
+ *  es una copia MODIFICADA de Linuwu-Sense.
+ *
+ *  Obra original (upstream):
+ *      Linuwu-Sense - https://github.com/0x7375646F/Linuwu-Sense
+ *      Copyright (C) 2025  0x7375646F (Sudo)
+ *      Licencia GPL-2.0-or-later, heredada del acer-wmi del kernel Linux
+ *      del que a su vez deriva.
+ *
+ *  Modificado en 2026 por el proyecto Nitro Gekko
+ *  (https://github.com/The-Gekko/Nitro-Gekko) para el Acer Nitro AN17-51.
+ *
+ *  CAMBIOS RESPECTO AL UPSTREAM (los unicos):
+ *
+ *   1. Anadido el quirk `quirk_acer_nitro_an17_51` con
+ *      `.nitro_v4 = 1, .four_zone_kb = 1` y su entrada correspondiente en la
+ *      tabla DMI.  El AN17-51 no figura en la tabla del upstream y sin esa
+ *      entrada el grupo sysfs `four_zoned_kb` no llega a crearse.  Forzar el
+ *      parametro de modulo `nitro_v4=1` NO basta: ese camino selecciona un
+ *      quirk con `.four_zone_kb = 0` explicito.
+ *
+ *   2. Tres llamadas a `strncpy()` sustituidas por `memcpy()`.  En el kernel
+ *      7.2 `strncpy` ya no esta declarado para codigo de kernel y el fuente
+ *      del upstream no compila.  La sustitucion es directa porque en los tres
+ *      sitios `len < sizeof(destino)` y el NUL terminador se escribe
+ *      explicitamente justo despues.
+ *
+ *  El resto del fichero es del upstream, sin tocar.  Los avisos de copyright
+ *  y la licencia de arriba se conservan intactos, como exige la GPL.
+ *  El texto completo de la licencia bajo la que se distribuye el conjunto del
+ *  proyecto esta en el fichero LICENSE de la raiz del repositorio; este
+ *  fichero concreto sigue siendo GPL-2.0-or-later, compatible con el.
+ *  ---------------------------------------------------------------------
  */
 
  #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt

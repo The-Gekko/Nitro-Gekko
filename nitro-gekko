@@ -4,6 +4,22 @@
 set -euo pipefail
 RAIZ="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 export PYTHONPATH="$RAIZ/src${PYTHONPATH:+:$PYTHONPATH}"
-# Para que el icono simbolico del repositorio se encuentre sin instalarlo.
-export XDG_DATA_DIRS="$RAIZ/data${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+
+# Para que el icono del repositorio se encuentre sin instalarlo.
+#
+# OJO CON EL VALOR POR DEFECTO.  Esto era:
+#     export XDG_DATA_DIRS="$RAIZ/data${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+# y cuando XDG_DATA_DIRS venia SIN DEFINIR -una consola de texto, un `su`, una
+# unidad de systemd, un contenedor- el resultado era XDG_DATA_DIRS=<repo>/data
+# A SECAS, o sea /usr/share FUERA del camino de busqueda.  Sintoma medido:
+#
+#     search path = [~/.local/share/icons, ~/.icons, <repo>/data/icons, ...]
+#     power-profile-balanced-symbolic  ->  NO existe   (icono roto en la UI)
+#     GLib-GIO-CRITICAL: g_settings_schema_source_lookup: assertion
+#         'source != NULL' failed          (ni un solo esquema de GSettings)
+#
+# La especificacion XDG dice que, sin definir, XDG_DATA_DIRS vale
+# "/usr/local/share/:/usr/share/".  Se usa ese valor en vez de la cadena vacia.
+export XDG_DATA_DIRS="$RAIZ/data:${XDG_DATA_DIRS:-/usr/local/share/:/usr/share/}"
+
 exec python3 -m gekkonitro "$@"

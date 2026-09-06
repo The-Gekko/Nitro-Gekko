@@ -3,31 +3,38 @@
  * Sólo lo imprescindible. El resto lo pone el tema de GNOME Shell: cuanto
  * menos se toque, mejor se integra.
  *
- * REGLA IMPORTANTE: aquí NO se fijan colores de texto. GNOME Shell 50 no marca
- * el tema claro con ninguna clase CSS: carga dos hojas distintas y enteras
+ * REGLA 1: aquí NO se fijan colores de texto. GNOME Shell 50 no marca el tema
+ * claro con ninguna clase CSS: carga dos hojas distintas y enteras
  * (gnome-shell-light.css / gnome-shell-dark.css). Desde una extensión no se
  * puede distinguir una de otra, así que cualquier color escrito a fuego acaba
- * ilegible en una de las dos. Se usa 'opacity', que atenúa bien sobre
- * cualquier fondo, y se deja que el color lo herede el tema.
+ * ilegible en una de las dos. Se deja que el color lo herede el tema.
+ *
+ * REGLA 2: 'opacity' NO EXISTE en el CSS de St. No está entre las propiedades
+ * que entiende, y una declaración así se ignora sin decir nada. Comprobado
+ * dentro de gnome-shell 50.4 (gjs 1.88.1): a un St.Label con
+ * set_style('opacity: 0.2') y con set_style('opacity: 51') le siguen quedando
+ * actor.opacity = 255 y get_paint_opacity() = 255, mientras que 'font-size' y
+ * 'color' puestos por la misma vía sí se aplican. Ni siquiera el tema del
+ * propio Shell se libra: tiene una regla 'opacity: 0.5' que tampoco hace nada.
+ * Lo que hay que atenuar se atenúa desde extension.js poniendo la propiedad
+ * 'opacity' del actor (ver OPACIDAD_RPM_REFERENCIA).
  */
 
 /* Filas de sólo lectura del menú (RPM y aviso del fallo de PPD).
- * Al no ser pulsables, GNOME ya les pone la clase 'popup-inactive-menu-item',
- * que el tema colorea correctamente en claro (#222226) y en oscuro (#ffffff).
- * Aquí sólo se ajusta el tamaño y se atenúan un poco para que se lean como
- * información y no como algo en lo que se puede hacer clic. */
+ * Aquí sólo se ajusta el tamaño. El color NO hace falta tocarlo: al no ser
+ * pulsables, St les pone la pseudoclase ':insensitive' y el tema ya las
+ * atenúa por su cuenta con .popup-inactive-menu-item:insensitive, que es
+ * #9b9b9d en oscuro y #78787b en claro. */
 .nitro-gekko-fila-informativa {
     font-size: 0.9em;
-    opacity: 0.8;
 }
 
 /* RPM de referencia medidas en el AN17-51, a la derecha de cada perfil. */
 .nitro-gekko-rpm-referencia {
     font-size: 0.8em;
-    /* Cifras de ancho fijo: así el número no baila al refrescarse.
-     * El propio tema del Shell usa font-feature-settings, está soportado. */
+    /* Cifras de ancho fijo: así el número no baila al refrescarse. Ésta sí la
+     * soporta libst-18.so, y el propio tema del Shell la usa. */
     font-feature-settings: "tnum";
-    opacity: 0.6;
     padding: 0 0.5em;
 }
 

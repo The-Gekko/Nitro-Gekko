@@ -1,38 +1,91 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC
- "-//freedesktop//DTD polkit Policy Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 
 <!--
   Politica polkit de Nitro Gekko.
+  Destino: /usr/share/polkit-1/actions/org.thegekko.nitrogekko.policy
 
-  UNA SOLA ACCION, y esto es deliberado, no pereza: pkexec resuelve la accion
-  a partir de la anotacion org.freedesktop.policykit.exec.path, que apunta a
-  UN ejecutable. Un ejecutable = una accion. Para tener autorizacion por
-  operacion (perfil / potencia / bateria por separado) harian falta varios
-  binarios helper, o un servicio D-Bus con pkcheck por metodo.
+  COMO SE VALIDA (polkit no descarga la URL del DOCTYPE: parsea con expat y
+  no resuelve entidades externas, asi que la referencia es documental).
+  Se valida contra el DTD que trae el propio paquete polkit, sustituyendo la
+  URL remota por la ruta local y con la red desactivada:
 
-  Se eligio un solo helper con una interfaz cerrada porque la seguridad real
-  aqui no la da la granularidad de la accion, sino que el helper NO acepta
-  rutas: solo cuatro nombres de accion y un valor que valida contra el propio
-  kernel. Ver packaging/SEGURIDAD.md.
+    sed 's#http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd#/usr/share/polkit-1/policyconfig-1.dtd#' \
+        org.thegekko.nitrogekko.policy > /tmp/p.xml
+    xmllint  no-net  no-out  valid  /tmp/p.xml     (las opciones llevan dos guiones)
 
-  auth_admin_keep en allow_active es lo que hace esto usable: pide la
-  contrasena UNA vez y la cachea unos minutos para la sesion activa. Sin eso,
-  mover el deslizador del PL1 pediria contrasena en cada paso.
+  OJO al editar estos comentarios: XML PROHIBE dos guiones seguidos dentro de
+  un comentario. Un fichero mal formado NO da error visible: polkit lo
+  descarta en silencio, la accion org.thegekko.nitrogekko.aplicar deja de
+  existir y pkexec cae en org.freedesktop.policykit.exec, que es auth_admin
+  sin cache, o sea contrasena en cada pulsacion. Por eso install.sh aborta
+  si xmllint no valida este fichero.
+
+  ===================================================================
+  POR QUE UNA SOLA ACCION
+  ===================================================================
+
+  pkexec resuelve la accion a partir de la anotacion
+  org.freedesktop.policykit.exec.path, que apunta a UN ejecutable.
+  Un ejecutable = una accion. Para autorizar por operacion (perfil,
+  potencia, bateria o teclado por separado) harian falta varios binarios
+  helper, que es exactamente lo que hace gamemode: cuatro acciones y cuatro
+  programas diminutos en /usr/lib/gamemode (cpugovctl, gpuclockctl,
+  cpucorectl, procsysctl). La otra via seria un servicio D-Bus de sistema
+  con pkcheck por metodo.
+
+  Aqui se ha elegido un solo helper con una interfaz cerrada porque la
+  seguridad real no la da la granularidad de la accion, sino que el helper
+  NO acepta rutas: cruza la frontera de privilegio un nombre de accion de un
+  conjunto cerrado de diez y un valor que se valida contra el propio kernel
+  antes de escribirlo. La granularidad de gamemode compra "este proceso
+  puede tocar el gobernador pero no la GPU"; aqui las diez acciones son la
+  misma aplicacion y el mismo usuario, asi que separarlas no cambiaria quien
+  puede hacer que.
+
+  Lo que si cuesta la accion unica, y hay que decirlo: la autorizacion es de
+  grano grueso. Quien autoriza "cambiar el perfil" esta autorizando tambien,
+  mientras dure la cache, subir el PL1 o quitar el limite de carga de la
+  bateria. Por eso el mensaje de abajo enumera el alcance COMPLETO y no solo
+  lo que el usuario acaba de tocar: ese texto es lo unico que ve antes de
+  decidir.
+
+  ===================================================================
+  POR QUE auth_admin_keep Y NO "yes" NI "auth_admin"
+  ===================================================================
+
+  "yes" (sin contrasena) es lo que usa power-profiles-daemon para su accion
+  switch-profile, y ahi es defendible: es un metodo D-Bus que solo acepta
+  tres nombres de perfil y no puede escribir un limite de potencia
+  arbitrario. Este helper si puede. Poner "yes" aqui equivaldria al modo
+  udev, en el que cualquier proceso del usuario baja el PL1 a 10 W en
+  silencio. Ver packaging/SEGURIDAD.md.
+
+  "auth_admin" (contrasena en CADA llamada) haria inusable el control del
+  PL1: una contrasena por cada paso del deslizador.
+
+  auth_admin_keep, contrasena una vez y cacheada unos minutos para la sesion
+  activa, es lo que usan systemd (manage-units), gnome-remote-desktop y
+  meson para este mismo patron de "helper root con interfaz estrecha". Es la
+  eleccion correcta aqui.
+
+  allow_any y allow_inactive van a "no": nada de sesiones remotas ni de
+  usuarios que no esten delante de la maquina.
 -->
 
 <policyconfig>
 
   <vendor>Nitro Gekko</vendor>
-  <vendor_url>https://github.com/the-gekko/nitro-gekko</vendor_url>
+  <vendor_url>https://github.com/The-Gekko/Nitro-Gekko</vendor_url>
   <icon_name>org.thegekko.nitrogekko</icon_name>
 
   <action id="org.thegekko.nitrogekko.aplicar">
     <description xml:lang="es">Aplicar ajustes de hardware del portatil</description>
     <description>Apply laptop hardware settings</description>
-    <message xml:lang="es">Se necesita autenticacion para cambiar el perfil termico, el limite de potencia de la CPU o el limite de carga de la bateria.</message>
-    <message>Authentication is required to change the thermal profile, the CPU power limit or the battery charge limit.</message>
+    <message xml:lang="es">Se necesita autenticacion para cambiar los ajustes de hardware del portatil: perfil termico, limite de potencia de la CPU (PL1), Turbo Boost, limite de carga y calibracion de la bateria, teclado retroiluminado, carga por USB con el equipo apagado y sonido de arranque.</message>
+    <message>Authentication is required to change the laptop hardware settings: thermal profile, CPU power limit (PL1), Turbo Boost, battery charge limit and calibration, keyboard backlight, USB charging while powered off, and startup sound.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

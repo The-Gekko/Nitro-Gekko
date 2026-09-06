@@ -74,11 +74,6 @@ class GraficaRPM(Gtk.DrawingArea):
         self._serie2.append(float(fan2) if fan2 is not None else None)
         self.queue_draw()
 
-    def limpiar(self) -> None:
-        self._serie1.clear()
-        self._serie2.clear()
-        self.queue_draw()
-
     @property
     def hay_datos(self) -> bool:
         return any(v is not None for v in self._serie1)
@@ -90,7 +85,16 @@ class GraficaRPM(Gtk.DrawingArea):
 
         La serie 1 usa el color de acento elegido por el usuario en GNOME; la 2,
         el naranja de la paleta de libadwaita, que contrasta con casi todos los
-        acentos.  El texto sale del propio widget, asi que hereda el tema.
+        acentos.  El texto sale de Gtk.Widget.get_color(), o sea del CSS del
+        propio widget: cambia solo con el tema, igual que lo hace cualquier
+        GtkLabel de la ventana.  Comprobado con una configuracion de GTK limpia:
+        get_color() da (1,1,1) en oscuro y (0,0,0.024) en claro.
+
+        (Si un ~/.config/gtk-4.0/gtk.css del usuario fija los colores de
+        libadwaita a mano en :root con prioridad USER, get_color() devuelve
+        siempre ese color y la grafica se queda con el.  Es correcto: entonces
+        TODAS las etiquetas de TODAS las aplicaciones GTK4 hacen lo mismo, y la
+        grafica debe parecerse a ellas, no llevar la contraria.)
         """
         gestor = Adw.StyleManager.get_default()
         try:
@@ -129,7 +133,9 @@ class GraficaRPM(Gtk.DrawingArea):
 
         # --- rejilla y etiquetas ------------------------------------------
         cr.set_line_width(1.0)
-        cr.select_font_face("monospace", 0, 0)
+        cr.select_font_face(
+            "monospace", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL
+        )
         cr.set_font_size(9)
         for rpm in range(0, EJE_MAX + 1, PASO_REJILLA):
             y = round(y_de(rpm)) + 0.5  # +0.5 => linea nitida de 1 px
@@ -203,7 +209,7 @@ class GraficaRPM(Gtk.DrawingArea):
                 # Linea principal.
                 cr.set_source_rgba(color.red, color.green, color.blue, 1.0)
                 cr.set_line_width(1.8)
-                cr.set_line_join(1)  # round
+                cr.set_line_join(cairo.LINE_JOIN_ROUND)
                 cr.move_to(*puntos[0])
                 for px, py in puntos[1:]:
                     cr.line_to(px, py)
@@ -219,7 +225,9 @@ class GraficaRPM(Gtk.DrawingArea):
 
         # --- leyenda -------------------------------------------------------
         cr.set_font_size(10)
-        cr.select_font_face("sans-serif", 0, 0)
+        cr.select_font_face(
+            "sans-serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL
+        )
         lx = x0 + 6
         for color, texto in ((col1, "CPU"), (col2, "GPU")):
             cr.set_source_rgba(color.red, color.green, color.blue, 1.0)

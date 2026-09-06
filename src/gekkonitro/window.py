@@ -1,7 +1,13 @@
 """Ventana principal de Nitro Gekko.
 
 AdwApplicationWindow -> AdwToastOverlay -> AdwToolbarView -> AdwHeaderBar +
-una sola AdwPreferencesPage con cinco grupos.
+AdwViewStack con dos AdwPreferencesPage:
+
+    «Sistema»  perfil termico, ventiladores, potencia, bateria, temperaturas
+    «Teclado»  estilos, efecto propio, color por zona, comportamiento
+
+La pagina de teclado SOLO se anade si el driver linuwu_sense esta cargado; sin
+el, la ventana ensena la pagina de sistema sola, sin conmutador ni pestanas.
 
 El bucle de refresco se detiene cuando la ventana deja de ser visible y se
 reanuda al volver, para no quemar CPU en segundo plano.
@@ -9,7 +15,11 @@ reanuda al volver, para no quemar CPU en segundo plano.
 
 from __future__ import annotations
 
+import glob
+import math
 import threading
+
+import cairo  # viene con GTK4/pycairo; se usa para el degradado de las muestras
 
 import gi
 
@@ -28,6 +38,9 @@ PERIODO_RAPIDO = 1
 PERIODO_LENTO = 10
 #: Periodo de consulta a la GPU (nvidia-smi despierta la tarjeta).
 PERIODO_GPU = 5
+#: Espera tras el ultimo cambio del selector de PL1 antes de escribirlo.
+#: Agrupa la rafaga de clics en «+» en una sola escritura privilegiada.
+RETARDO_PL1_MS = 700
 
 #: Iconos por perfil.  Se usan en el desplegable y en la fila de RPM tipicas.
 ICONOS_PERFIL = {
@@ -37,6 +50,11 @@ ICONOS_PERFIL = {
     "balanced-performance": "speedometer-symbolic",
     "performance": "power-profile-performance-symbolic",
 }
+
+#: Umbrales de carga USB que acepta el driver, en el mismo orden que las
+#: opciones del desplegable.  Cualquier otro valor lo interpreta como 0 en
+#: silencio, por eso la lista es cerrada.
+UMBRALES_USB = (0, 10, 20, 30)
 
 #: Texto del aviso del perfil roto (gotcha 1).
 AVISO_BP = (
@@ -50,9 +68,19 @@ AVISO_BP = (
 
 #: Explicacion del «Not charging» que confunde a todo el mundo.
 AYUDA_NOT_CHARGING = (
-    "Con el limite activo la bateria deja de cargar al llegar al 80 %, y "
-    "entonces BAT1 informa «Not charging». Es el comportamiento correcto, no "
-    "una averia ni un cargador defectuoso."
+    "Con el limite activo la bateria deja de cargar al llegar al 80 %, y a "
+    "partir de ahi el kernel informa «Not charging». Es el comportamiento "
+    "correcto, no una averia ni un cargador defectuoso."
+)
+
+#: Subtitulo de la fila del limite de carga cuando falta el modulo que la
+#: implementa.  Dice QUE falta y COMO instalarlo, que es lo mismo que ya
+#: imprimen packaging/install.sh y packaging/preparar-sistema.sh: un mensaje
+#: que solo diga «no disponible» deja tirada a la persona.
+AYUDA_SIN_ACER_WMI_BATTERY = (
+    "No disponible: falta el modulo acer-wmi-battery, que no viene con el "
+    "kernel. Instalalo desde el AUR con «yay -S acer-wmi-battery-dkms-git» y "
+    "asegura la carga temprana con «sudo ./packaging/preparar-sistema.sh»."
 )
 
 
@@ -62,6 +90,17 @@ class VentanaNitro(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app, title="Nitro Gekko")
         self.set_default_size(560, 780)
+        # Ancho MINIMO 480 px, medido: por debajo de eso el valor del
+        # desplegable de direccion («Derecha a izquierda») y el de la carga USB
+        # («Hasta el 30 %») se elidian.  GTK dejaba encoger la ventana hasta
+        # 360 px, que en un portatil de 17" no le sirve a nadie y solo servia
+        # para romper la unica parte de la interfaz que no se puede recortar mas
+        # sin mentir.  De 480 px en adelante no elide NADA en ninguna de las dos
+        # pestanas (comprobado a 480, 560, 720 y 900).
+        # El alto minimo se fija tambien: la pagina ya lleva su propio scroll,
+        # pero sin esto GTK dejaba la ventana en 104 px de alto, que no ensena
+        # ni un grupo entero.
+        self.set_size_request(480, 400)
 
         self._control = sysfs.ControlNitro()
         self._ajustes = Ajustes()
@@ -70,14 +109,14 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._id_rapido: int | None = None
         self._id_lento: int | None = None
         self._id_gpu: int | None = None
+        #: Escritura de PL1 pendiente (retardo antirrafaga), None = ninguna.
+        self._id_pl1: int | None = None
         #: Guarda durante la construccion, cuando aun no hay estado de hardware.
         self._cargando = True
         #: La interfaz de verdad (no la pagina de error) esta construida.
         self._interfaz_lista = False
         #: La ventana ya se ha cerrado: no se vuelve a arrancar ningun bucle.
         self._cerrada = False
-        #: Superficie GDK a la que estamos escuchando 'notify::state'.
-        self._superficie_enganchada = None
 
         # ULTIMO ESTADO LEIDO DEL HARDWARE.  Es la defensa contra la reentrada:
         # un manejador solo escribe si el valor del widget DIFIERE del hardware.
@@ -106,8 +145,9 @@ class VentanaNitro(Adw.ApplicationWindow):
         # acierta con «Reintentar» se quedaba sin 'unmap' ni 'close-request', y
         # los tres temporizadores seguian leyendo sysfs para siempre despues de
         # cerrarla (medido: seguian vivos tras close()).
-        self.connect("map", self._al_mapear)
+        self.connect("map", lambda *_: self._arrancar_bucles())
         self.connect("unmap", lambda *_: self._parar_bucles())
+        self.connect("notify::suspended", self._al_cambiar_suspension)
         self.connect("notify::is-active", self._al_cambiar_actividad)
         self.connect("close-request", self._al_cerrar)
 
@@ -120,6 +160,12 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._toasts.set_child(self._construir_interfaz())
         self._interfaz_lista = True
         self._cargando = False
+        # Hay perfil pero falta algo secundario (tipicamente el hwmon 'acer' en
+        # un modelo distinto): la interfaz se abre igual y el aviso se da aqui,
+        # en vez de tapiarla entera.  Con GLib.idle_add porque el AdwToast
+        # necesita que el ToastOverlay ya este realizado.
+        if not diagnostico.completo and diagnostico.faltantes:
+            GLib.idle_add(self._avisar_hardware_parcial, diagnostico.faltantes[0])
 
     # ------------------------------------------------------------------
     # Construccion de la interfaz
@@ -173,6 +219,12 @@ class VentanaNitro(Adw.ApplicationWindow):
         # cargado. Con el acer_wmi del kernel se omite entera, en vez de
         # ensenar una pestana llena de controles en gris que no explican nada.
         self._hay_teclado = self._control.hay_teclado_rgb()
+        if not self._hay_teclado:
+            # ...pero omitirla EN SILENCIO deja tirado a quien sabe que su
+            # portatil tiene teclado RGB y no encuentra donde se toca. Una
+            # pestana que no esta no se puede pulsar para preguntar por que no
+            # esta, asi que la explicacion va aqui, en la pagina que si se ve.
+            pagina.add(self._grupo_sin_teclado())
 
         vista = Adw.ToolbarView()
         cabecera = Adw.HeaderBar()
@@ -229,10 +281,21 @@ class VentanaNitro(Adw.ApplicationWindow):
 
         El clamp de AdwPreferencesPage concede 575 px al grupo, de modo que el
         ToggleGroup se queda 54 px corto SIEMPRE y elide las etiquetas: el
-        usuario veria «Equilibrado-r…» y «Bajo cons…».  Con un AdwComboRow el
-        nombre del perfil se lee entero, sobra sitio para el icono de aviso de
-        «balanced-performance» como sufijo, y ademas se adapta solo si en el
-        futuro el kernel expone mas perfiles (la lista sale de 'choices').
+        usuario veria «Equilibrado-r…» y «Bajo cons…».  Con un AdwComboRow sobra
+        sitio para el icono de aviso de «balanced-performance» como sufijo, y
+        ademas se adapta solo si en el futuro el kernel expone mas perfiles (la
+        lista sale de 'choices').
+
+        Y POR QUE use_subtitle=True (tambien medido)
+        -------------------------------------------
+        Con use_subtitle=False el valor elegido se pinta en la ListView interna
+        del sufijo, cuya etiqueta trae max-width-chars=20 CLAVADO por
+        libadwaita.  «Equilibrado-rendimiento» son 23 caracteres, asi que salia
+        elidido A CUALQUIER ANCHO DE VENTANA: medido a 560, 640, 720 y 900 px,
+        la etiqueta recibia siempre 160 px y siempre con is_ellipsized()=True,
+        aunque la fila entera tuviera 571 px y el hueco de sufijos 208.  Con
+        use_subtitle=True el valor pasa a ser el subtitulo de la fila, sin ese
+        tope: mismos 23 caracteres, 425 px asignados, is_ellipsized()=False.
         """
         grupo = Adw.PreferencesGroup(
             title="Perfil termico",
@@ -248,7 +311,7 @@ class VentanaNitro(Adw.ApplicationWindow):
             title="Perfil activo",
             model=Gtk.StringList.new(etiquetas),
         )
-        self._combo_perfil.set_use_subtitle(False)
+        self._combo_perfil.set_use_subtitle(True)
 
         # Icono de aviso para 'balanced-performance' (gotcha 1).  Va como sufijo
         # de la fila y solo se muestra cuando ese perfil esta seleccionado.
@@ -264,8 +327,13 @@ class VentanaNitro(Adw.ApplicationWindow):
         # Fila con las RPM tipicas medidas de cada perfil.
         fila_rpm = Adw.ActionRow(
             title="RPM tipicas por perfil",
-            subtitle="Medidas en este equipo. «Rendimiento» sopla al doble para "
-            "ganar apenas 1 °C.",
+            # NO dice «medidas en este equipo»: estan medidas en el Acer Nitro
+            # AN17-51 del autor y viajan cableadas en sysfs.RPM_TIPICAS.  En
+            # otro modelo son solo una referencia, y llamarlas «de este equipo»
+            # es mentirle a quien mire el numero.  Las RPM de verdad son las
+            # dos filas de abajo, que si vienen del hwmon.
+            subtitle="Referencia medida en un Acer Nitro AN17-51: «Rendimiento» "
+            "sopla al doble para ganar apenas 1 °C. Tu equipo puede dar otras.",
         )
         # Sin limite de lineas: con las cinco columnas de iconos ocupando el
         # sufijo, a 360 px (el ancho minimo que admite la ventana) tres lineas
@@ -273,10 +341,12 @@ class VentanaNitro(Adw.ApplicationWindow):
         fila_rpm.set_subtitle_lines(0)
         caja = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         caja.set_valign(Gtk.Align.CENTER)
+        columnas = 0
         for perfil in perfiles:
             rpm = sysfs.RPM_TIPICAS.get(perfil)
             if rpm is None:
                 continue
+            columnas += 1
             columna = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
             columna.set_tooltip_text(
                 f"{sysfs.ETIQUETAS_PERFIL.get(perfil, perfil)}: ~{rpm} RPM"
@@ -290,8 +360,13 @@ class VentanaNitro(Adw.ApplicationWindow):
             columna.append(icono)
             columna.append(valor)
             caja.append(columna)
-        fila_rpm.add_suffix(caja)
-        grupo.add(fila_rpm)
+        # Si NINGUN perfil de este equipo esta en la tabla de referencia (otro
+        # modelo con otros nombres de perfil), la fila se quedaba con el
+        # subtitulo prometiendo una comparativa y un hueco vacio al lado.
+        # Mejor no ponerla.
+        if columnas:
+            fila_rpm.add_suffix(caja)
+            grupo.add(fila_rpm)
         return grupo
 
     # -- grupo 2: ventiladores -----------------------------------------
@@ -358,12 +433,48 @@ class VentanaNitro(Adw.ApplicationWindow):
             "PLATYPUS (CVE-2020-8694).",
         )
 
-        maximo = self._control.pl1_maximo_w()
+        # El tope de 65 W NO sale de tu chip: es el limite duro que impone el
+        # helper privilegiado (PL1_MAX_W en packaging/nitro-gekko-helper), y ese
+        # numero es el PL1 que el firmware de Acer pone de fabrica EN EL
+        # AN17-51.  En otro portatil puede quedar muy por encima de lo que tu
+        # CPU declara, asi que el subtitulo dice las dos cifras en vez de dar a
+        # entender que 65 W es «lo tuyo».  Subir el PL1 no puede romper nada
+        # -PROCHOT, el TCC y la curva del EC siguen mandando-, pero calienta y
+        # mete ruido, y eso hay que decirlo.
+        self._pl1_nominal_w = self._control.pl1_maximo_w()
         self._spin_pl1 = Adw.SpinRow.new_with_range(10, 65, 1)
         self._spin_pl1.set_title("Limite de potencia sostenida (PL1)")
-        self._spin_pl1.set_subtitle(
-            f"En vatios. El nominal declarado del chip es {maximo:.0f} W."
-        )
+        if not self._control.hay_pl1():
+            # Un Acer con CPU AMD no tiene intel-rapl, y sin el no hay PL1 que
+            # tocar.  Antes la fila se quedaba activa marcando 10 W (el minimo
+            # del rango, porque no habia nada que leer) y al moverla NO pasaba
+            # NADA: _al_cambiar_pl1 se corta en `self._hw_pl1_w is None` sin
+            # escribir ni avisar, asi que el selector se quedaba en el valor
+            # nuevo y parecia aplicado.  Comprobado con las rutas de RAPL
+            # apuntando a un directorio inexistente: escrituras [], toasts [].
+            self._spin_pl1.set_subtitle(
+                "No disponible en este equipo: no existe "
+                "/sys/class/powercap/intel-rapl:0, asi que no hay RAPL de Intel "
+                "que limitar. Es lo normal en un Acer con CPU AMD; el "
+                "equivalente ahi es RyzenAdj, que este proyecto no usa."
+            )
+            self._spin_pl1.set_sensitive(False)
+        elif self._pl1_nominal_w is None:
+            # Hay RAPL pero constraint_0_max_power_uw no se deja leer: se dice
+            # el tope del ayudante y NO se inventa la potencia base del chip.
+            self._spin_pl1.set_subtitle(
+                "En vatios. No se ha podido leer la potencia base que declara "
+                "tu chip (constraint_0_max_power_uw), asi que no hay con que "
+                "compararlo; el maximo que acepta el ayudante son 65 W (lo que "
+                "el firmware del Nitro AN17-51 pone de fabrica)."
+            )
+        else:
+            self._spin_pl1.set_subtitle(
+                f"En vatios. Tu chip declara {self._pl1_nominal_w:.0f} W nominales; "
+                f"el maximo que acepta el ayudante son 65 W (lo que el firmware del "
+                f"Nitro AN17-51 pone de fabrica)."
+            )
+        self._spin_pl1.set_subtitle_lines(0)
         self._spin_pl1.connect("notify::value", self._al_cambiar_pl1)
         grupo.add(self._spin_pl1)
 
@@ -393,6 +504,13 @@ class VentanaNitro(Adw.ApplicationWindow):
         )
         self._sw_reaplicar.set_active(bool(self._ajustes.obtener("reaplicar_pl1")))
         self._sw_reaplicar.connect("notify::active", self._al_cambiar_reaplicar)
+        # Sin PL1 que reaplicar, el ajuste no puede hacer nada: se desactiva en
+        # vez de dejar un interruptor que solo escribe en ajustes.json.
+        if not self._control.hay_pl1():
+            self._sw_reaplicar.set_sensitive(False)
+            self._sw_reaplicar.set_subtitle(
+                "No disponible: sin RAPL de Intel no hay PL1 que reaplicar."
+            )
         grupo.add(self._sw_reaplicar)
 
         self._sw_turbo = Adw.SwitchRow(
@@ -400,6 +518,19 @@ class VentanaNitro(Adw.ApplicationWindow):
             subtitle="Permite a la CPU superar su frecuencia base.",
         )
         self._sw_turbo.connect("notify::active", self._al_cambiar_turbo)
+        # intel_pstate/no_turbo NO existe con CPU AMD ni arrancando con
+        # 'intel_pstate=disable' (ahi el equivalente es cpufreq/boost, que este
+        # proyecto no toca).  Sin esta guarda el interruptor salia APAGADO -que
+        # es una afirmacion, no un «no se sabe»- y al pulsarlo se movia sin
+        # escribir nada y sin avisar de nada.
+        if not self._control.hay_turbo():
+            self._sw_turbo.set_sensitive(False)
+            self._sw_turbo.set_subtitle(
+                "No disponible en este equipo: no existe "
+                "/sys/devices/system/cpu/intel_pstate/no_turbo. Pasa con CPU "
+                "AMD y arrancando con 'intel_pstate=disable'."
+            )
+            self._sw_turbo.set_subtitle_lines(0)
         grupo.add(self._sw_turbo)
         return grupo
 
@@ -414,6 +545,16 @@ class VentanaNitro(Adw.ApplicationWindow):
         )
         self._sw_salud.set_subtitle_lines(3)
         self._sw_salud.connect("notify::active", self._al_cambiar_salud)
+        # El README declara acer-wmi-battery OPCIONAL, asi que este es el caso
+        # que mas se va a dar en otro equipo: sin ese DKMS, health_mode no
+        # existe.  Antes el interruptor salia apagado y clicable, se movia al
+        # pulsarlo y ni se escribia ni se avisaba.  Aqui ademas se dice COMO
+        # conseguirlo, que es lo que ya dicen install.sh y preparar-sistema.sh.
+        self._hay_salud_bateria = self._control.hay_salud_bateria()
+        if not self._hay_salud_bateria:
+            self._sw_salud.set_sensitive(False)
+            self._sw_salud.set_subtitle_lines(0)
+            self._sw_salud.set_subtitle(AYUDA_SIN_ACER_WMI_BATTERY)
         grupo.add(self._sw_salud)
 
         self._fila_temp_bat = Adw.ActionRow(
@@ -441,8 +582,16 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._fila_cpu.add_suffix(self._lbl_cpu)
         grupo.add(self._fila_cpu)
 
+        # El «16» estaba cableado: son los hilos del i7-13620H de esta maquina.
+        # En otra CPU el subtitulo mentia.  Se cuenta lo que de verdad se
+        # promedia, que son los ficheros scaling_cur_freq que existan.
+        hilos = len(glob.glob(sysfs.CPUFREQ_GLOB))
         self._fila_freq = Adw.ActionRow(
-            title="Frecuencia media", subtitle="Media de los 16 hilos"
+            title="Frecuencia media",
+            subtitle=(
+                f"Media de los {hilos} hilos" if hilos
+                else "Sin cpufreq: no hay frecuencias que promediar"
+            ),
         )
         self._lbl_freq = Gtk.Label(label="—")
         self._lbl_freq.add_css_class("numeric")
@@ -467,13 +616,13 @@ class VentanaNitro(Adw.ApplicationWindow):
     def _arrancar_bucles(self) -> None:
         """Arranca los temporizadores si procede y no estaban ya en marcha.
 
-        La guarda es imprescindible: el compositor sigue emitiendo
-        'notify::state' DESPUES del unmap y del cierre de la ventana, y como
-        esos estados ya no traen SUSPENDED, _al_cambiar_estado los interpretaba
-        como «ha vuelto a ser visible» y rearmaba los tres bucles con la ventana
-        cerrada (medido: 4 tics del ciclo de 1 Hz en 4 s tras close(), mas un
-        nvidia-smi cada 5 s despertando la GPU).  Solo se lee sysfs con la
-        interfaz construida, la ventana mapeada y sin haberse cerrado.
+        La guarda es imprescindible: el compositor sigue notificando cambios de
+        estado DESPUES del unmap y del cierre de la ventana, y como esos estados
+        ya no traen SUSPENDED, el manejador los interpretaba como «ha vuelto a
+        ser visible» y rearmaba los tres bucles con la ventana cerrada (medido:
+        4 tics del ciclo de 1 Hz en 4 s tras close(), mas un nvidia-smi cada 5 s
+        despertando la GPU).  Solo se lee sysfs con la interfaz construida, la
+        ventana mapeada y sin haberse cerrado.
         """
         if not self._interfaz_lista or self._cerrada or not self.get_mapped():
             return
@@ -495,35 +644,39 @@ class VentanaNitro(Adw.ApplicationWindow):
                 GLib.source_remove(ident)
                 setattr(self, atributo, None)
 
-    def _al_mapear(self, *_args) -> None:
-        """La ventana aparece: arranca y engancha el estado del toplevel.
+    def _al_cambiar_suspension(self, *_args) -> None:
+        """El compositor dice si la ventana sigue siendo visible de verdad.
 
-        En Wayland minimizar NO desmapea la ventana, asi que 'unmap' por si solo
-        no basta. GTK 4.12+ expone GDK_TOPLEVEL_STATE_SUSPENDED, que el
-        compositor activa cuando la ventana deja de ser visible de verdad
-        (minimizada, tapada por otra o en otro escritorio): es la senal correcta
-        para dejar de leer sysfs.
+        En Wayland minimizar NO desmapea la ventana ni la marca invisible, asi
+        que 'unmap' y 'notify::visible' no sirven para esto.  MEDIDO en esta
+        sesion (GNOME Shell 50.4, GTK 4.22.4), con la ventana minimizada:
+
+            get_mapped() ....... True     <- sigue mapeada
+            get_visible() ...... True     <- sigue «visible» para GTK
+            unmap .............. no llega
+            notify::visible .... no llega
+            estado del toplevel  SUSPENDED, sin el bit MINIMIZED
+
+        La unica senal buena es GtkWindow:suspended (GTK 4.12+), equivalente a
+        GDK_TOPLEVEL_STATE_SUSPENDED pero sin tener que engancharse a mano a la
+        GdkSurface (que se destruye y se recrea al desrealizar la ventana).
+
+        LATENCIA, QUE NO ES CERO: mutter tarda en marcar la ventana suspendida.
+        Cronometrado tres veces con minimize() y una vez tapandola con una
+        ventana a pantalla completa, contando los tics del ciclo de 1 Hz:
+
+            minimize() -> SUSPENDED ...... 3,81 s   (4 tics rapidos de mas)
+            tapada     -> SUSPENDED ...... 3,66 s   (4 tics rapidos de mas)
+            destapada  -> vuelve a leer ... 0,21 s
+
+        Esos 4 tics de mas cuestan 4 x 0,58 ms de lecturas de sysfs, y ademas
+        una consulta a nvidia-smi si cae dentro.  No hay forma de adelantarlo
+        con senales de GTK: lo unico que se entera antes es el reloj de
+        fotogramas (deja de latir a los 0,3 s), pero para vigilarlo hay que
+        mantener un tick callback vivo a 60 Hz, que gasta mucho mas de lo que
+        ahorra.  Asi que se documenta y punto.
         """
-        self._arrancar_bucles()
-        # La GdkSurface se destruye y se vuelve a crear si la ventana se
-        # desrealiza, asi que no basta con una bandera de «ya enganchado»:
-        # comparamos la superficie concreta para no quedarnos escuchando a una
-        # superficie muerta (y para no conectar dos veces a la misma).
-        superficie = self.get_surface()
-        if superficie is not None and superficie is not self._superficie_enganchada:
-            superficie.connect("notify::state", self._al_cambiar_estado)
-            self._superficie_enganchada = superficie
-
-    def _al_cambiar_estado(self, superficie, _pspec) -> None:
-        """El compositor dice si la ventana sigue siendo visible."""
-        try:
-            estado = superficie.get_state()
-        except AttributeError:  # pragma: no cover - GDK sin get_state
-            return
-        oculta = bool(estado & Gdk.ToplevelState.SUSPENDED) or bool(
-            estado & Gdk.ToplevelState.MINIMIZED
-        )
-        if oculta:
+        if self.is_suspended():
             self._parar_bucles()
         else:
             self._arrancar_bucles()
@@ -537,6 +690,11 @@ class VentanaNitro(Adw.ApplicationWindow):
         """La ventana se cierra: se para todo y no se vuelve a arrancar."""
         self._cerrada = True
         self._parar_bucles()
+        # Tambien la escritura de PL1 que estuviera esperando su retardo: si no,
+        # se dispararia un pkexec con la ventana ya cerrada.
+        if self._id_pl1 is not None:
+            GLib.source_remove(self._id_pl1)
+            self._id_pl1 = None
         return False
 
     def _tic_rapido(self) -> bool:
@@ -620,7 +778,14 @@ class VentanaNitro(Adw.ApplicationWindow):
         spin.has_focus() -> False).  Con aquella comprobacion el tic de 1 Hz
         pisaba el valor que el usuario estuviera escribiendo.  Hay que preguntar
         por el widget con foco de la ventana y ver si cuelga de la fila.
+
+        Cuenta tambien como «en edicion» una escritura de PL1 aun pendiente por
+        el retardo antirrafaga: la rueda del raton cambia el valor SIN dar el
+        foco a la fila, y sin esto el tic de 1 Hz devolvia el selector al valor
+        del hardware y se perdia el cambio antes de escribirlo.
         """
+        if self._id_pl1 is not None:
+            return True
         foco = self.get_focus()
         if foco is None:
             return False
@@ -646,6 +811,13 @@ class VentanaNitro(Adw.ApplicationWindow):
         # El caso que confunde: limite activo + «Not charging» a 80 %.
         if estado.health_mode and bruto == "Not charging":
             texto += ". Ha llegado al limite y ha dejado de cargar a proposito."
+        if not self._hay_salud_bateria:
+            # Sin acer-wmi-battery la fila esta desactivada y su subtitulo
+            # explica como instalarlo: el tic de 1 Hz lo pisaba con el estado
+            # de la bateria y borraba la unica instruccion util de la pantalla.
+            # El porcentaje se conserva delante, que si es una lectura real.
+            self._sw_salud.set_subtitle(f"{texto}. {AYUDA_SIN_ACER_WMI_BATTERY}")
+            return
         self._sw_salud.set_subtitle(texto)
         self._sw_salud.set_tooltip_text(AYUDA_NOT_CHARGING)
 
@@ -704,17 +876,54 @@ class VentanaNitro(Adw.ApplicationWindow):
         )
         return GLib.SOURCE_REMOVE
 
-
     # ------------------------------------------------------------------
     # Pagina de teclado (solo con el driver linuwu_sense)
     # ------------------------------------------------------------------
 
+    def _grupo_sin_teclado(self) -> Adw.PreferencesGroup:
+        """Explica por que no hay pestana «Teclado».
+
+        Se muestra cuando `/sys/devices/platform/acer-wmi/four_zoned_kb` no
+        existe, que es lo que pasa con el `acer_wmi` de mainline (no tiene una
+        sola linea de codigo RGB) y en los modelos que no estan en la tabla DMI
+        de `linuwu_sense`.
+        """
+        grupo = Adw.PreferencesGroup(
+            title="Teclado RGB",
+            description=(
+                "No disponible: falta el grupo «four_zoned_kb» de sysfs, que "
+                "solo crea el driver linuwu_sense. El acer_wmi del kernel no "
+                "trae control de RGB."
+            ),
+        )
+        fila = Adw.ActionRow(
+            title="Como activarlo",
+            subtitle="sudo ./packaging/instalar-rgb.sh   (desde el repositorio)",
+        )
+        fila.add_prefix(Gtk.Image.new_from_icon_name("keyboard-brightness-symbolic"))
+        fila.set_subtitle_selectable(True)
+        grupo.add(fila)
+        aviso = Adw.ActionRow(
+            title="Si ya lo instalaste y sigue sin salir",
+            subtitle=(
+                "Tu modelo no esta en la tabla DMI del driver: los perfiles y "
+                "los ventiladores funcionan, pero el teclado no es de 4 zonas "
+                "o el driver no lo reconoce."
+            ),
+        )
+        aviso.add_prefix(Gtk.Image.new_from_icon_name("dialog-information-symbolic"))
+        grupo.add(aviso)
+        return grupo
+
     def _pagina_teclado(self) -> Gtk.Widget:
         """Iluminacion del teclado RGB de 4 zonas y extras del EC.
 
-        El estado se lee al construir y despues de cada cambio, NUNCA en el
-        bucle de 1 Hz: leer este grupo cuesta ~89 ms porque cada atributo es
-        una llamada WMI real al firmware.
+        El estado se lee al construir y despues de cada cambio, NUNCA en un
+        temporizador: leer este grupo cuesta entre 47 y 53 ms medidos con
+        time.perf_counter (mediana de 25 llamadas), porque cada atributo es una
+        llamada WMI real al firmware.  Los unicos dos sitios desde los que se
+        llama a leer_teclado() son este constructor y _refrescar_teclado(), y
+        ninguno cuelga de un GLib.timeout_add.
         """
         self._tec = self._control.leer_teclado()
 
@@ -752,21 +961,66 @@ class VentanaNitro(Adw.ApplicationWindow):
             # franjas reales; para los efectos, el color que llevan.
             muestra = Gtk.DrawingArea(height_request=12)
             if tipo == "zonas":
-                cols = [self._hex_a_rgb(c) for c in valor.split(",")[:4]]
+                cols, estilo = [self._hex_a_rgb(c) for c in valor.split(",")[:4]], "franjas"
             else:
-                p = valor.split(",")
-                cols = [(int(p[4]) / 255, int(p[5]) / 255, int(p[6]) / 255)] * 4
-            muestra.set_draw_func(self._pintar_muestra, cols)
+                cols, estilo = self._muestra_de_efecto(valor)
+            muestra.set_draw_func(self._pintar_muestra, (cols, estilo))
             contenido.append(muestra)
             contenido.append(Gtk.Label(label=nombre, css_classes=["caption"]))
             boton.set_child(contenido)
             boton.connect("clicked", self._al_pulsar_preset, nombre)
             caja.append(boton)
 
-        fila = Adw.PreferencesRow(activatable=False, css_classes=["no-hover"])
+        fila = Adw.PreferencesRow(activatable=False)
         fila.set_child(caja)
         grupo.add(fila)
         return grupo
+
+    #: Arcoiris de referencia para los modos en los que el firmware elige el
+    #: color el solo (el driver pone red=green=blue=0 antes de mandarlo).
+    ARCOIRIS = ((1.0, 0.0, 0.0), (1.0, 0.8, 0.0), (0.0, 0.9, 0.4), (0.2, 0.5, 1.0))
+
+    @staticmethod
+    def _muestra_de_efecto(valor: str) -> tuple[list, str]:
+        """Colores y ESTILO de dibujo de la muestra de un preset de efecto.
+
+        No basta con pintar el color guardado: «Neon» lleva 0,0,0 porque el
+        firmware IGNORA el color en ese modo (EFECTOS_RGB dice usa_color=False),
+        y salia exactamente igual que «Apagado» — dos cuadros negros iguales
+        para dos cosas opuestas.
+
+        Pero pintar de arcoiris TODOS los modos que ignoran el color tampoco
+        vale: «Neon» y «Onda» salian con el mismo dibujo exacto, y volviamos a
+        tener dos estilos indistinguibles (comprobado: las cuatro franjas eran
+        identicas hasta el ultimo decimal).  Por eso ademas del color se
+        devuelve un estilo, que separa lo que en el teclado se ve distinto:
+
+            «degradado»  modos con direccion (Onda, Desplazamiento): el color
+                         VIAJA por el teclado, se dibuja continuo.
+            «destellos»  modo 7: enciende teclas sueltas, se dibuja con puntos
+                         para no salir igual que «Blanco fijo», que lleva
+                         exactamente el mismo color.
+            «franjas»    el resto.
+        """
+        p = valor.split(",")
+        try:
+            modo, brillo = int(p[0]), int(p[2])
+            color = (int(p[4]) / 255, int(p[5]) / 255, int(p[6]) / 255)
+        except (ValueError, IndexError):
+            return [(0.5, 0.5, 0.5)] * 4, "franjas"
+        if brillo == 0:
+            # El teclado se apaga: negro es la verdad, no una convencion.
+            return [(0.05, 0.05, 0.05)] * 4, "franjas"
+        fila = next((f for f in sysfs.EFECTOS_RGB if f[0] == modo), None)
+        usa_color = True if fila is None else fila[2]
+        usa_direccion = False if fila is None else fila[3]
+        if not usa_color:
+            return list(VentanaNitro.ARCOIRIS), (
+                "degradado" if usa_direccion else "franjas"
+            )
+        if modo == 7:
+            return [color] * 4, "destellos"
+        return [color] * 4, "franjas"
 
     @staticmethod
     def _hex_a_rgb(texto: str) -> tuple[float, float, float]:
@@ -777,16 +1031,40 @@ class VentanaNitro(Adw.ApplicationWindow):
             return (0.5, 0.5, 0.5)
 
     @staticmethod
-    def _pintar_muestra(area, cr, ancho, alto, colores) -> None:
-        """Cuatro franjas: es literalmente lo que van a ver en el teclado."""
+    def _pintar_muestra(area, cr, ancho, alto, datos) -> None:
+        """Muestra de un estilo.  *datos* es (colores, estilo).
+
+        El estilo existe para que dos presets con el MISMO color no acaben con
+        el mismo dibujo: ver _muestra_de_efecto().
+        """
+        colores, estilo = datos
         n = max(1, len(colores))
-        paso = ancho / n
-        radio = min(6, alto / 2)
-        for i, (r, g, b) in enumerate(colores):
-            cr.set_source_rgb(r, g, b)
-            cr.rectangle(i * paso, 0, paso + 1, alto)
+        if estilo == "degradado" and n > 1:
+            # El color viaja por el teclado: continuo, no a bloques.
+            grad = cairo.LinearGradient(0, 0, ancho, 0)
+            for i, (r, g, b) in enumerate(colores):
+                grad.add_color_stop_rgb(i / (n - 1), r, g, b)
+            cr.set_source(grad)
+            cr.rectangle(0, 0, ancho, alto)
             cr.fill()
-        # Borde redondeado por encima, para que no parezca un bloque pegado.
+        else:
+            paso = ancho / n
+            for i, (r, g, b) in enumerate(colores):
+                cr.set_source_rgb(r, g, b)
+                cr.rectangle(i * paso, 0, paso + 1, alto)
+                cr.fill()
+        if estilo == "destellos":
+            # Teclas sueltas encendidas sobre el teclado a oscuras.
+            cr.set_source_rgba(0, 0, 0, 0.72)
+            cr.rectangle(0, 0, ancho, alto)
+            cr.fill()
+            r, g, b = colores[0]
+            cr.set_source_rgb(r, g, b)
+            radio = max(1.0, min(2.0, alto / 6))
+            for fx, fy in ((0.14, 0.34), (0.36, 0.68), (0.55, 0.28), (0.78, 0.6)):
+                cr.arc(ancho * fx, alto * fy, radio, 0, 2 * math.pi)
+                cr.fill()
+        # Borde por encima, para que no parezca un bloque pegado.
         cr.set_source_rgba(0, 0, 0, 0.25)
         cr.set_line_width(1)
         cr.rectangle(0.5, 0.5, ancho - 1, alto - 1)
@@ -812,7 +1090,9 @@ class VentanaNitro(Adw.ApplicationWindow):
 
         self._esc_velocidad = Adw.SpinRow.new_with_range(0, 9, 1)
         self._esc_velocidad.set_title("Velocidad")
-        self._esc_velocidad.set_subtitle("0 la mas lenta, 9 la mas rapida")
+        self._esc_velocidad.set_subtitle(
+            "0 la mas lenta, 9 la mas rapida. Fijo y Respiracion la ignoran"
+        )
         self._esc_velocidad.set_value(
             self._tec.efecto[1] if self._tec.efecto and len(self._tec.efecto) > 1 else 4
         )
@@ -879,7 +1159,11 @@ class VentanaNitro(Adw.ApplicationWindow):
 
         self._brillo_zonas = Adw.SpinRow.new_with_range(0, 100, 5)
         self._brillo_zonas.set_title("Brillo")
-        self._brillo_zonas.set_value(self._tec.brillo_zonas or 100)
+        # `or 100` estaba mal: un brillo REAL de 0 (teclado apagado) es falsy y
+        # se mostraba como 100, mintiendo sobre el estado del hardware.
+        self._brillo_zonas.set_value(
+            100 if self._tec.brillo_zonas is None else self._tec.brillo_zonas
+        )
         grupo.add(self._brillo_zonas)
 
         boton = Gtk.Button(label="Aplicar colores", css_classes=["suggested-action"],
@@ -904,17 +1188,29 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._sw_retro.connect("notify::active", self._al_cambiar_retro)
         grupo.add(self._sw_retro)
 
+        # Etiquetas CORTAS a proposito: la etiqueta del valor elegido de un
+        # AdwComboRow trae max-width-chars=20 clavado por libadwaita, y
+        # «Hasta el 30 % de bateria» (24) salia elidido a cualquier ancho
+        # (medido: 85 px a 560, 160 px a 900, is_ellipsized()=True en los dos).
+        # Que va de bateria ya lo dicen el titulo y el subtitulo de la fila.
         opciones = Gtk.StringList()
-        for t in ("Desactivada", "Hasta el 10 % de bateria",
-                  "Hasta el 20 % de bateria", "Hasta el 30 % de bateria"):
+        for t in ("Desactivada", "Hasta el 10 %", "Hasta el 20 %", "Hasta el 30 %"):
             opciones.append(t)
+        # Subtitulo CORTO tambien a proposito.  Medido en la pagina real: con
+        # «Deja de cargar por debajo del umbral, para no vaciar la bateria» la
+        # caja de titulo+subtitulo se queda 352 px y al valor le sobran 33, que
+        # no dan ni para «Hasta el 30 %»; recortandolo a 36 caracteres el valor
+        # recibe 93 px y cabe entero desde 480 px de ventana. El titulo NO era
+        # el culpable: con «Carga USB» a secas el valor seguia con 33 px.
         self._combo_usb = Adw.ComboRow(
             title="Carga USB con el portatil apagado",
-            subtitle="Deja de cargar por debajo del umbral, para no vaciar la bateria",
+            subtitle="Deja de cargar por debajo del umbral",
             model=opciones,
         )
-        mapa = {0: 0, 10: 1, 20: 2, 30: 3}
-        self._combo_usb.set_selected(mapa.get(self._tec.usb_carga or 0, 0))
+        actual_usb = self._tec.usb_carga
+        self._combo_usb.set_selected(
+            UMBRALES_USB.index(actual_usb) if actual_usb in UMBRALES_USB else 0
+        )
         self._combo_usb.connect("notify::selected", self._al_cambiar_usb)
         grupo.add(self._combo_usb)
 
@@ -986,7 +1282,7 @@ class VentanaNitro(Adw.ApplicationWindow):
     def _al_cambiar_usb(self, *_a) -> None:
         if self._cargando:
             return
-        umbral = (0, 10, 20, 30)[self._combo_usb.get_selected()]
+        umbral = UMBRALES_USB[self._combo_usb.get_selected()]
         self._lanzar_escritura(
             lambda cb: self._control.escribir_usb_carga(umbral, al_terminar=cb),
             self._refrescar_teclado, lambda: None,
@@ -1002,8 +1298,57 @@ class VentanaNitro(Adw.ApplicationWindow):
         )
 
     def _refrescar_teclado(self) -> None:
-        """Relee el estado real tras un cambio. Cuesta ~89 ms: solo aqui."""
+        """Relee el estado real tras un cambio y REPINTA los controles.
+
+        Cuesta entre 47 y 53 ms medidos (todo llamadas WMI), asi que solo se
+        llama desde aqui: al terminar una escritura del usuario, nunca desde un
+        temporizador.
+
+        Antes solo actualizaba self._tec y dejaba los widgets como estaban: si
+        tocabas el estilo «Arcoiris», el teclado se ponia de colores pero los
+        cuatro selectores de «Color por zona» seguian ensenando los colores
+        viejos, y el desplegable de efectos tampoco se enteraba.  Ahora se
+        vuelcan los valores reales en los controles.
+        """
         self._tec = self._control.leer_teclado()
+        self._volcar_teclado()
+
+    def _volcar_teclado(self) -> None:
+        """Pone en los widgets el ultimo estado leido del firmware."""
+        tec = self._tec
+        # _cargando corta los manejadores de los interruptores mientras dura el
+        # volcado: si no, poner el valor real dispararia otra escritura.
+        self._cargando = True
+        try:
+            if tec.efecto:
+                if 0 <= tec.efecto[0] < len(sysfs.EFECTOS_RGB):
+                    self._combo_efecto.set_selected(tec.efecto[0])
+                if len(tec.efecto) > 1:
+                    self._esc_velocidad.set_value(tec.efecto[1])
+                if len(tec.efecto) > 2:
+                    self._esc_brillo.set_value(tec.efecto[2])
+                if len(tec.efecto) > 3:
+                    self._combo_direccion.set_selected(min(max(tec.efecto[3], 0), 2))
+                if len(tec.efecto) >= 7:
+                    r, g, b = tec.efecto[4], tec.efecto[5], tec.efecto[6]
+                    self._color_efecto.set_rgba(
+                        Gdk.RGBA(red=r / 255, green=g / 255, blue=b / 255, alpha=1)
+                    )
+            if tec.zonas:
+                for i, boton in enumerate(self._colores_zona):
+                    if i < len(tec.zonas):
+                        r, g, b = self._hex_a_rgb(tec.zonas[i])
+                        boton.set_rgba(Gdk.RGBA(red=r, green=g, blue=b, alpha=1))
+            if tec.brillo_zonas is not None:
+                self._brillo_zonas.set_value(tec.brillo_zonas)
+            if tec.retro_timeout is not None:
+                self._sw_retro.set_active(tec.retro_timeout)
+            if tec.usb_carga in UMBRALES_USB:
+                self._combo_usb.set_selected(UMBRALES_USB.index(tec.usb_carga))
+            if tec.sonido_arranque is not None:
+                self._sw_sonido.set_active(tec.sonido_arranque)
+        finally:
+            self._cargando = False
 
     # ------------------------------------------------------------------
     # Acciones del usuario
@@ -1013,8 +1358,19 @@ class VentanaNitro(Adw.ApplicationWindow):
         """Toast, nunca un dialogo modal para algo trivial."""
         self._toasts.add_toast(Adw.Toast(title=mensaje, timeout=4))
 
-    def _informar(self, resultado: sysfs.Resultado) -> None:
-        self._notificar(resultado.mensaje)
+    def _avisar_hardware_parcial(self, detalle: str) -> bool:
+        """Aviso de arranque cuando falta hardware secundario.
+
+        El texto largo de `Diagnostico.faltantes` no cabe en un toast, asi que
+        el toast dice la frase corta y el detalle entero va en el tooltip de la
+        fila que se ha quedado sin dato.  Devuelve False para que GLib no
+        vuelva a llamar.
+        """
+        self._notificar("Sin lectura de ventiladores en este equipo.")
+        for fila in (getattr(self, "_fila_fan1", None), getattr(self, "_fila_fan2", None)):
+            if fila is not None:
+                fila.set_tooltip_text(detalle)
+        return False
 
     # -- escritura asincrona -------------------------------------------------
     #
@@ -1069,7 +1425,14 @@ class VentanaNitro(Adw.ApplicationWindow):
         def al_exito() -> None:
             self._perfil_actual = perfil
             # El firmware reescribe el PL1 por MMIO en cada cambio de perfil.
-            if self._ajustes.reaplicar_pl1:
+            #
+            # OJO: aqui habia `self._ajustes.reaplicar_pl1`, y Ajustes no tiene
+            # ese atributo (se lee con obtener()).  El AttributeError saltaba
+            # DENTRO de _resolver_escritura, antes del _notificar, asi que cada
+            # cambio de perfil correcto se quedaba sin su toast y la opcion
+            # «Reaplicar PL1» no se aplicaba nunca.  Reproducido con un pkexec
+            # simulado que devuelve 0.
+            if self._ajustes.obtener("reaplicar_pl1"):
                 GLib.timeout_add(600, self._reaplicar_pl1)
 
         self._lanzar_escritura(
@@ -1077,7 +1440,6 @@ class VentanaNitro(Adw.ApplicationWindow):
             al_exito,
             al_fallo,
         )
-        return
 
     def _reaplicar_pl1(self) -> bool:
         """Reescribe el PL1 que estaba puesto, tras un cambio de perfil.
@@ -1097,14 +1459,66 @@ class VentanaNitro(Adw.ApplicationWindow):
         )
         return GLib.SOURCE_REMOVE
 
+    def _marcar_pl1_sobre_nominal(self) -> None:
+        """Avisa cuando el PL1 elegido pasa de lo que declara TU chip.
+
+        El deslizador llega a 65 W en cualquier equipo, porque ese es el limite
+        del ayudante privilegiado y esta puesto para el AN17-51 (i7-13620H,
+        45 W nominales, firmware a 65 W).  En un portatil con un chip mas
+        pequeno, 65 W esta muy por encima de su potencia base y nadie te lo
+        estaba diciendo.  No se PROHIBE -el firmware de Acer hace exactamente
+        eso de fabrica y PROCHOT/TCC siguen protegiendo-, se marca en ambar.
+        """
+        nominal = getattr(self, "_pl1_nominal_w", None)
+        spin = getattr(self, "_spin_pl1", None)
+        if nominal is None or spin is None:
+            return
+        if spin.get_value() > nominal + 0.5:
+            spin.add_css_class("warning")
+            spin.set_tooltip_text(
+                f"Estas pidiendo mas potencia sostenida ({spin.get_value():.0f} W) "
+                f"que la que tu CPU declara como base ({nominal:.0f} W).\n\n"
+                f"No es peligroso: es lo que hace el firmware de Acer de fabrica, "
+                f"y los limites termicos (PROCHOT/TCC) y la curva del ventilador "
+                f"siguen mandando. Pero calienta mas y hace mas ruido."
+            )
+        else:
+            spin.remove_css_class("warning")
+            spin.set_tooltip_text(None)
+
     def _al_cambiar_pl1(self, *_args) -> None:
+        """Programa la escritura del PL1, con retardo.
+
+        POR QUE HAY RETARDO (medido)
+        ----------------------------
+        La escritura salia en cada 'notify::value', y AdwSpinRow emite uno por
+        cada pulsacion de «+»: cinco clics = cinco escrituras privilegiadas
+        seguidas (comprobado, 46, 47, 48, 49 y 50 W).  Con polkit en
+        auth_admin_keep la primera pide contrasena y las demas cuelan, pero son
+        cinco invocaciones del helper como root, cinco toasts y cinco lineas en
+        el journal por un solo gesto del usuario; y sin cache, cinco dialogos de
+        contrasena en fila.  Con RETARDO_PL1_MS solo se escribe el valor en el
+        que el usuario se para.
+        """
+        self._marcar_pl1_sobre_nominal()
+        if self._id_pl1 is not None:
+            GLib.source_remove(self._id_pl1)
+            self._id_pl1 = None
+        if self._cargando or self._hw_pl1_w is None:
+            return
+        if abs(self._spin_pl1.get_value() - self._hw_pl1_w) < 0.5:
+            return
+        self._id_pl1 = GLib.timeout_add(RETARDO_PL1_MS, self._escribir_pl1_ahora)
+
+    def _escribir_pl1_ahora(self) -> bool:
+        self._id_pl1 = None
         vatios = self._spin_pl1.get_value()
         # Si ya coincide con el hardware no hay nada que escribir: esto absorbe
         # tanto la actualizacion del tic de 1 Hz como cualquier reversion.
         if self._cargando or self._hw_pl1_w is None:
-            return
+            return GLib.SOURCE_REMOVE
         if abs(vatios - self._hw_pl1_w) < 0.5:
-            return
+            return GLib.SOURCE_REMOVE
         previo_w = self._hw_pl1_w
 
         def al_fallo_pl1() -> None:
@@ -1126,6 +1540,7 @@ class VentanaNitro(Adw.ApplicationWindow):
             al_exito_pl1,
             al_fallo_pl1,
         )
+        return GLib.SOURCE_REMOVE
 
     def _al_cambiar_reaplicar(self, *_args) -> None:
         if self._cargando:
@@ -1172,4 +1587,3 @@ class VentanaNitro(Adw.ApplicationWindow):
             al_exito_salud,
             al_fallo_salud,
         )
-        return

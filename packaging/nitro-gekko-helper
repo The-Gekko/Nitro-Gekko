@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Helper privilegiado de Nitro Gekko.
 
 Se ejecuta como root a traves de `pkexec`, que a su vez pide la contrasena
@@ -40,6 +40,25 @@ valida contra el propio kernel antes de escribirlo.
     nitro-gekko-helper calibracion     <0|1>
     nitro-gekko-helper sonido_arranque <0|1>
 
+=== POR QUE EL SHEBANG ES ASI Y NO `#!/usr/bin/env python3` ===
+
+Esto corre como ROOT. `env python3` resuelve el interprete por $PATH, y
+`python3` a secas honra PYTHONPATH, PYTHONHOME y el site-packages del usuario,
+y ademas mete el DIRECTORIO DEL SCRIPT como sys.path[0]. Comprobado sin
+privilegio en esta maquina: con la version anterior,
+
+    PATH=/tmp/evil:$PATH nitro-gekko-helper pl1 45
+      -> ejecuta /tmp/evil/python3
+    PYTHONPATH=/tmp/evil nitro-gekko-helper pl1 45   (con /tmp/evil/pathlib.py)
+      -> ejecuta codigo arbitrario en el import
+
+Hoy eso NO era explotable porque pkexec limpia el entorno (solo conserva
+SHELL, LANG, LANGUAGE, LC_*, DISPLAY y XAUTHORITY, y fija
+PATH=/usr/sbin:/usr/bin:/sbin:/bin), pero la seguridad de un programa que
+corre como root no debe depender de que el lanzador limpie bien. Ruta
+absoluta al interprete y `-I` (modo aislado: implica -E, -s y -P) lo cierran
+en el propio fichero, valga quien valga como lanzador.
+
 === CODIGOS DE SALIDA ===
 
     0   exito
@@ -52,7 +71,25 @@ valida contra el propio kernel antes de escribirlo.
 
 from __future__ import annotations
 
+# Este programa NO lee NI UNA variable de entorno. `os` se usa solo para
+# geteuid(), open(), write(), fstat() y close(). Hubo una version con un
+# NITRO_GEKKO_SOLO_VALIDAR=1 que hacia salir con 0 justo antes de la
+# comprobacion de root; se ha quitado. Razones:
+#
+#   - No lo usaba nadie: `grep -rn SOLO_VALIDAR` sobre el proyecto entero solo
+#     encontraba la linea del propio helper.
+#   - Que un programa que corre como root cambie de comportamiento segun el
+#     entorno solo es seguro mientras el lanzador limpie el entorno. pkexec lo
+#     hace, pero eso es una propiedad del lanzador, no de este fichero.
+#   - Su efecto era "salir con 0 SIN aplicar nada". No podia escribir de mas,
+#     pero si podia hacer que la aplicacion diese por bueno un cambio que no
+#     habia ocurrido, es decir mentir en la interfaz.
+#
+# Si algun dia hace falta validar sin aplicar, que sea un argumento de la
+# linea de ordenes y que se rechace cuando geteuid() == 0, no una variable.
+
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -68,7 +105,6 @@ PERFIL_CHOICES_LEGACY = Path("/sys/firmware/acpi/platform_profile_choices")
 
 PL1_MSR = Path("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw")
 PL1_MMIO = Path("/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw")
-PL1_MAX = Path("/sys/class/powercap/intel-rapl:0/constraint_0_max_power_uw")
 
 BATERIA = Path("/sys/bus/wmi/drivers/acer-wmi-battery/health_mode")
 TURBO = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")
@@ -84,10 +120,31 @@ USB_CARGA = ACER_WMI / "nitro_sense" / "usb_charging"
 CALIBRACION = ACER_WMI / "nitro_sense" / "battery_calibration"
 SONIDO_ARRANQUE = ACER_WMI / "nitro_sense" / "boot_animation_sound"
 
-# Rango duro del PL1 en vatios. El minimo evita que un fallo deje la maquina
-# inutilizable; el maximo es el limite que el firmware Acer trae de fabrica
-# (65 W), asi que este helper nunca puede subir la potencia por encima de lo
-# que el propio fabricante ya permitia.
+# Rango duro del PL1 en vatios.
+#
+# MINIMO 10 W: por debajo la maquina queda inservible. El abuso realista del
+# PL1 no es subirlo, es BAJARLO en silencio.
+#
+# MAXIMO 65 W: es el valor que el firmware Acer deja puesto de fabrica en el
+# MSR. Que 65 W no puede danar el equipo se ve en los propios registros de
+# este portatil (i7-13620H):
+#
+#   intel-rapl:0/constraint_1_power_limit_uw       = 115000000  (PL2, 115 W)
+#   intel-rapl-mmio:0/constraint_0_power_limit_uw  =  70000000  (70 W AHORA)
+#
+# Es decir: el firmware ya sostiene 70 W por MMIO al cambiar de perfil (100 W
+# en 'performance') y ya autoriza rafagas de 115 W por PL2. Un PL1 de 65 W
+# queda POR DEBAJO de lo que la propia maquina hace sin que nadie se lo pida.
+# Ademas PL1 es un limite de POTENCIA, no un desbloqueo de voltaje ni de
+# frecuencia: no puentea el PROCHOT/TCC ni el control de ventiladores del EC,
+# asi que el techo fisico lo sigue poniendo el silicio. El efecto real de
+# subirlo es calor, ruido y bateria, no dano.
+#
+# Ojo con constraint_0_max_power_uw (45000000 aqui): NO es un tope que el
+# kernel imponga, es la potencia base declarada por Intel para el chip. Se lee
+# a titulo informativo (la app la ensena como "nominal declarado"), pero NO se
+# usa como limite: si se usara, el helper prohibiria 65 W, que es justo el
+# valor con el que la maquina arranca de fabrica.
 PL1_MIN_W = 10
 PL1_MAX_W = 65
 
@@ -98,21 +155,112 @@ def salir(codigo: int, mensaje: str) -> None:
     raise SystemExit(codigo)
 
 
-def escribir(ruta: Path, valor: str) -> None:
-    """Escritura sin buffer intermedio. sysfs quiere un write() por valor."""
-    if not ruta.exists():
-        salir(3, f"La ruta {ruta} no existe en este sistema.")
+def escribir(ruta: Path, valor: str, *, fatal: bool = True) -> bool:
+    """Escribe *valor* en *ruta* con un unico write(). sysfs lo exige asi.
+
+    SOBRE TOCTOU Y ENLACES SIMBOLICOS
+    ---------------------------------
+    La version anterior hacia `if not ruta.exists()` y despues `open()`: dos
+    resoluciones de la misma ruta con una ventana en medio. Aqui se abre UNA
+    sola vez y se comprueba el descriptor ya abierto (fstat), que es el orden
+    correcto: no queda ventana que aprovechar.
+
+    Ademas se abre con O_NOFOLLOW, asi que el ultimo componente no puede ser
+    un enlace simbolico, y se exige que sea un fichero regular. Hoy eso es
+    redundante -- las rutas son constantes de este fichero, cuelgan de
+    directorios 0755 root:root y sysfs no deja crear entradas ni a root
+    (comprobado: `ln -s /etc/shadow /sys/firmware/acpi/x` da EPERM) -- pero
+    cuesta dos banderas y cubre el caso de un /sys preparado dentro de un
+    espacio de nombres de montaje.
+
+    Nunca se usa O_CREAT: este programa no puede crear ficheros nuevos en
+    ninguna circunstancia, solo escribir en atributos que ya existen.
+
+    POR QUE O_NONBLOCK
+    ------------------
+    La comprobacion S_ISREG corre DESPUES del open, asi que no puede proteger
+    del propio open. Sin O_NONBLOCK, `os.open(ruta, O_WRONLY)` sobre una
+    tuberia con nombre SE BLOQUEA PARA SIEMPRE esperando un lector, y este
+    proceso corre como root con una autorizacion de polkit ya concedida.
+    Medido con la version anterior:
+
+        os.mkfifo(p); escribir(p, "1")   ->  colgado (timeout 5 s, rc=124)
+
+    Con O_NONBLOCK una FIFO sin lector da ENXIO y sale por el camino de
+    error 4. En un fichero regular (que es lo que son TODOS los atributos de
+    sysfs, comprobado con stat en las 12 rutas de la lista blanca) O_NONBLOCK
+    no tiene ningun efecto.
+
+    POR QUE O_TRUNC
+    ---------------
+    La version con `open(ruta, "w")` truncaba, porque el modo "w" implica
+    O_CREAT|O_TRUNC. Al pasar a os.open se perdio el truncado sin querer, y
+    sobre un fichero regular eso deja cola del valor anterior:
+
+        escribir(f, "45000000") sobre "viejo-largo-largo"
+          -> b'45000000rgo-largo'
+
+    En sysfs da igual (cada write() se entrega entero al metodo store() del
+    driver, no se acumula), pero se restaura el truncado para que la funcion
+    signifique lo mismo que antes en cualquier destino. O_CREAT sigue SIN
+    estar: el fichero tiene que existir ya.
+    """
     try:
-        with open(ruta, "w", encoding="ascii") as fh:
-            fh.write(valor)
+        fd = os.open(ruta, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_TRUNC)
+    except FileNotFoundError:
+        if fatal:
+            salir(3, f"La ruta {ruta} no existe en este sistema.")
+        return False
     except OSError as err:
-        salir(4, f"El kernel rechazo la escritura en {ruta}: {err.strerror}.")
+        if fatal:
+            salir(4, f"No se pudo abrir {ruta}: {err.strerror}.")
+        return False
+
+    # El fallo se GUARDA en vez de saltar desde el bloque, porque hay que
+    # cerrar el descriptor primero y `salir()` lanza SystemExit: lanzarlo
+    # desde dentro de un `finally` sustituiria el codigo de salida.
+    fallo: tuple[int, str] | None = None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            fallo = (4, f"{ruta} no es un atributo de sysfs normal.")
+        else:
+            # Todos los validadores devuelven texto ASCII reconstruido por
+            # ellos mismos, asi que encode() no puede fallar; se captura
+            # igualmente para que ni el peor caso imprima una traza siendo root.
+            os.write(fd, valor.encode("ascii"))
+    except UnicodeEncodeError:
+        fallo = (2, "Valor no representable en ASCII.")
+    except OSError as err:
+        fallo = (4, f"El kernel rechazo la escritura en {ruta}: {err.strerror}.")
+    finally:
+        # close() tambien puede fallar: hay drivers que difieren el error hasta
+        # aqui, y la version con `with open(...)` lo notaba porque el flush
+        # ocurria al cerrar. Sin este try, un close() con error imprimiria una
+        # TRAZA DE PYTHON en un proceso root, que es justo lo que este programa
+        # no debe hacer nunca.
+        try:
+            os.close(fd)
+        except OSError as err:
+            if fallo is None:
+                fallo = (4, f"El kernel rechazo la escritura en {ruta}: {err.strerror}.")
+
+    if fallo is not None:
+        if fatal:
+            salir(*fallo)
+        return False
+    return True
 
 
 def leer(ruta: Path) -> str | None:
+    """Lectura best-effort. Devuelve None ante cualquier problema.
+
+    Se captura tambien UnicodeDecodeError (que NO es OSError): un atributo de
+    sysfs con un byte no ASCII lanzaria una traza de Python en un proceso
+    root, y este programa no debe imprimir nunca una traza.
+    """
     try:
         return ruta.read_text(encoding="ascii").strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
 
@@ -130,6 +278,34 @@ def leer(ruta: Path) -> str | None:
 # leer (la lista de perfiles del kernel) es legible por cualquiera, asi que no
 # hace falta privilegio para decidir que un valor es invalido.
 # --------------------------------------------------------------------------
+
+
+def entero(texto: str) -> int | None:
+    """Entero decimal ASCII estricto, o None si no lo es.
+
+    NO se usa int() a secas, que es mucho mas permisivo de lo que dice la
+    documentacion de este programa. Comprobado en Python 3.14.7:
+
+        int('\u0664\u0665')  -> 45   (digitos arabigo-indices)
+        int('\uff14\uff15')  -> 45   (digitos de anchura completa)
+        int('4_5')            -> 45   (separador de millares de Python)
+        int(' 45\n')          -> 45   (espacios y saltos de linea)
+        int('+45')            -> 45   (signo mas)
+
+    Ninguna de esas formas deberia cruzar la frontera de privilegio: lo que
+    esta documentado es "un entero de vatios" y eso es exactamente [0-9]+.
+    No es que hoy fuese explotable -- el valor que se escribe se reconstruye
+    a partir del int, asi que a sysfs nunca llegaba el texto original -- pero
+    una interfaz privilegiada que acepta mas de lo que declara es una
+    interfaz que nadie puede auditar leyendo su documentacion.
+
+    Se admite el signo menos para que un negativo de un error de "fuera de
+    rango" (util) en vez de "no es un entero" (confuso).
+    """
+    cuerpo = texto[1:] if texto[:1] == "-" else texto
+    if not cuerpo.isascii() or not cuerpo.isdigit():
+        return None
+    return int(texto, 10)
 
 
 def validar_perfil(valor: str) -> str:
@@ -156,9 +332,8 @@ def aplicar_perfil(valor: str) -> None:
 
 
 def validar_pl1(valor: str) -> str:
-    try:
-        vatios = int(valor, 10)
-    except ValueError:
+    vatios = entero(valor)
+    if vatios is None:
         salir(2, f"PL1 invalido: {valor!r}. Se esperaba un entero de vatios.")
     if not PL1_MIN_W <= vatios <= PL1_MAX_W:
         salir(2, f"PL1 fuera de rango: {vatios} W. Permitido {PL1_MIN_W}..{PL1_MAX_W} W.")
@@ -171,12 +346,7 @@ def aplicar_pl1(uw: str) -> None:
     # falla, abortamos; si falla solo el MMIO seguimos, porque el firmware lo
     # reescribe en cada cambio de perfil de todas formas.
     escribir(PL1_MSR, uw)
-    if PL1_MMIO.exists():
-        try:
-            with open(PL1_MMIO, "w", encoding="ascii") as fh:
-                fh.write(uw)
-        except OSError:
-            pass  # No es fatal: el MSR ya quedo puesto.
+    escribir(PL1_MMIO, uw, fatal=False)  # Si falla, el MSR ya quedo puesto.
 
 
 def validar_binario(nombre: str):
@@ -218,10 +388,10 @@ def validar_rgb_efecto(valor: str) -> str:
     if len(partes) != 7:
         salir(2, "Efecto RGB invalido: se esperan 7 valores "
                  "modo,velocidad,brillo,direccion,R,G,B")
-    try:
-        modo, vel, brillo, direccion, r, g, b = (int(p, 10) for p in partes)
-    except ValueError:
-        salir(2, "Efecto RGB invalido: los 7 valores deben ser enteros.")
+    numeros = [entero(p) for p in partes]
+    if any(n is None for n in numeros):
+        salir(2, "Efecto RGB invalido: los 7 valores deben ser enteros decimales.")
+    modo, vel, brillo, direccion, r, g, b = numeros
     for nombre, v, lo, hi in (
         ("modo", modo, 0, 7), ("velocidad", vel, 0, 9), ("brillo", brillo, 0, 100),
         ("direccion", direccion, 0, 2), ("rojo", r, 0, 255),
@@ -245,10 +415,12 @@ def validar_rgb_zonas(valor: str) -> str:
         salir(2, "Color por zonas invalido: se esperan 4 colores y el brillo.")
     for i, color in enumerate(partes[:4], 1):
         if len(color) != 6 or any(c not in "0123456789abcdefABCDEF" for c in color):
-            salir(2, f"Zona {i}: '{color}' no es un color RRGGBB valido.")
-    try:
-        brillo = int(partes[4], 10)
-    except ValueError:
+            # Con !r: el valor viene de fuera y puede llevar caracteres de
+            # control. repr() los escapa, asi que no puede inyectar secuencias
+            # ANSI en la terminal o el journal de quien lea el error.
+            salir(2, f"Zona {i}: {color!r} no es un color RRGGBB valido.")
+    brillo = entero(partes[4])
+    if brillo is None:
         salir(2, f"Brillo invalido: {partes[4]!r}")
     if not 0 <= brillo <= 100:
         salir(2, f"Brillo fuera de rango: {brillo} (permitido 0..100).")
@@ -317,11 +489,6 @@ def main(argv: list[str]) -> None:
     # Validar PRIMERO, con o sin privilegio: asi un valor invalido se rechaza
     # sin que polkit llegue a pedirle la contrasena al usuario para nada.
     normalizado = validar(valor)
-
-    # --solo-validar permite a la aplicacion comprobar un valor sin disparar
-    # el dialogo de autenticacion.
-    if os.environ.get("NITRO_GEKKO_SOLO_VALIDAR") == "1":
-        raise SystemExit(0)
 
     if os.geteuid() != 0:
         salir(

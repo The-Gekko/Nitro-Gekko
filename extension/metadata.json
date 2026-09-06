@@ -2,8 +2,12 @@
   "uuid": "nitro-gekko@thegekko.dev",
   "name": "Nitro Gekko",
   "description": "Cambia el perfil térmico del Acer Nitro AN17-51 desde Configuración rápida y muestra las RPM de los ventiladores. Parte del panel de control Nitro Gekko.",
-  "shell-version": ["50"],
+  "shell-version": [
+    "50"
+  ],
   "version-name": "1.0.0",
-  "url": "https://github.com/the-gekko/nitro-gekko",
-  "session-modes": ["user"]
+  "url": "https://github.com/The-Gekko/Nitro-Gekko",
+  "session-modes": [
+    "user"
+  ]
 }
