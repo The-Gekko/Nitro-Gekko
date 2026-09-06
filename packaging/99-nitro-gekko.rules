@@ -1,0 +1,175 @@
+# ============================================================================
+#  Nitro Gekko - reglas udev
+#  Acer Nitro AN17-51 (Spacia_RTH) - da escritura al grupo 'wheel' sobre las
+#  rutas de sysfs que la aplicacion necesita modificar.
+#  Destino: /usr/lib/udev/rules.d/99-nitro-gekko.rules
+#
+#  Lee packaging/SEGURIDAD.md antes de instalar esto. Resumen: se abre
+#  escritura de grupo sobre 4 atributos de sysfs. No se abre NINGUNA lectura
+#  nueva (en particular energy_uj sigue siendo 0400 root, por PLATYPUS).
+# ============================================================================
+#
+# ---------------------------------------------------------------------------
+#  POR QUE RUN+="chgrp/chmod" Y NO MODE=/GROUP=
+# ---------------------------------------------------------------------------
+#  Las claves MODE=, OWNER= y GROUP= de udev se aplican al NODO DE DISPOSITIVO
+#  (el fichero que udev crea en /dev), no a los atributos de sysfs. Verificado
+#  en esta maquina: ninguno de los dispositivos implicados tiene nodo,
+#
+#      udevadm info -q all -p /sys/class/platform-profile/platform-profile-0
+#      udevadm info -q all -p /sys/class/powercap/intel-rapl:0
+#      udevadm info -q all -p /sys/class/powercap/intel-rapl-mmio:0
+#
+#  no imprimen ninguna linea 'N:' ni DEVNAME. Es decir: poner MODE="0664"
+#  GROUP="wheel" en estas reglas seria una instruccion silenciosamente inutil,
+#  no cambiaria los permisos de 'profile' ni de 'constraint_0_power_limit_uw'.
+#
+#  El idioma correcto (y el que usan en la practica los proyectos que ajustan
+#  permisos de sysfs) es ejecutar chgrp/chmod desde la propia regla con RUN+=.
+#  Notas sobre RUN+= que conviene tener presentes al editar este fichero:
+#    - Se ejecuta con execve(), NO a traves de una shell: no hay expansion de
+#      comodines, ni redirecciones, ni ';'. Hay que dar la ruta absoluta del
+#      binario. Por eso las rutas van escritas enteras, sin globs.
+#    - Varios RUN+= se acumulan y se ejecutan en el orden en que aparecen.
+#    - El worker de udev espera a que terminen: los comandos deben ser cortos.
+#    - udev NO exporta PATH al proceso: el entorno que recibe son las
+#      propiedades del evento (DEVPATH, SUBSYSTEM, ACTION...). Por eso los
+#      binarios van con ruta absoluta TAMBIEN dentro de un 'sh -c'; si no,
+#      solo funcionan por el PATH de emergencia que se inventa bash.
+#
+#  ATTR{...}="valor" tampoco sirve aqui: eso ESCRIBE un valor en el atributo,
+#  no cambia sus permisos.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+#  1) PERFIL DE PLATAFORMA (nuevo sysfs de clase)
+#     /sys/class/platform-profile/platform-profile-0/profile
+#
+#     Atributos reales del dispositivo, comprobados con
+#       udevadm info -a -p /sys/class/platform-profile/platform-profile-0
+#     -> KERNEL=="platform-profile-0"
+#        SUBSYSTEM=="platform-profile"
+#        ATTR{name}=="acer-wmi"
+#        ATTR{choices}=="low-power quiet balanced balanced-performance performance"
+#        ATTR{profile}=="balanced"
+#
+#     Se casa por ATTR{name}=="acer-wmi" (y no solo por KERNEL) para no tocar
+#     el perfil de otro proveedor si algun dia aparece un segundo registrador.
+#     La ruta que se hace escribible es la ABSOLUTA del atributo, construida a
+#     partir de KERNEL para que no dependa del orden de enumeracion.
+# ---------------------------------------------------------------------------
+ACTION=="add|change", SUBSYSTEM=="platform-profile", ATTR{name}=="acer-wmi", \
+    RUN+="/usr/bin/chgrp wheel /sys/class/platform-profile/%k/profile", \
+    RUN+="/usr/bin/chmod 0664 /sys/class/platform-profile/%k/profile"
+
+# ---------------------------------------------------------------------------
+#  2) LIMITE DE POTENCIA SOSTENIDA (PL1), RAPL
+#     /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw       (MSR)
+#     /sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw  (MMIO)
+#
+#     Los dos son 'package-0'. El MSR es el que manda; el MMIO lo reescribe el
+#     firmware al cambiar de perfil, por eso la app necesita escribir en ambos.
+#
+#     Solo se abre constraint_0 (long_term). constraint_1 (short_term, PL2) y
+#     constraint_2 (peak_power) se dejan de solo lectura a proposito.
+#
+#     energy_uj NO se toca: sigue en 0400 root (CVE-2020-8694 / PLATYPUS).
+# ---------------------------------------------------------------------------
+ACTION=="add|change", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0", ATTR{name}=="package-0", \
+    RUN+="/usr/bin/chgrp wheel /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw", \
+    RUN+="/usr/bin/chmod 0664 /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw"
+
+ACTION=="add|change", SUBSYSTEM=="powercap", KERNEL=="intel-rapl-mmio:0", ATTR{name}=="package-0", \
+    RUN+="/usr/bin/chgrp wheel /sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw", \
+    RUN+="/usr/bin/chmod 0664 /sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw"
+
+# ---------------------------------------------------------------------------
+#  3) LIMITE DE CARGA DE BATERIA (acer-wmi-battery)
+#     /sys/bus/wmi/drivers/acer-wmi-battery/health_mode   (0 = 100%, 1 = 80%)
+#
+#     ESTE ES EL CASO RARO Y HAY QUE ENTENDERLO ANTES DE TOCARLO:
+#
+#     health_mode NO es un atributo de un dispositivo, es un atributo del
+#     DRIVER (creado con DRIVER_ATTR_RW por el modulo DKMS acer-wmi-battery de
+#     Frederik Harwath). Vive en /sys/bus/wmi/drivers/... , que no cuelga de
+#     /sys/devices, asi que NINGUN dispositivo udev tiene esa ruta como
+#     DEVPATH. Consecuencia: udev no puede llegar a el "por el dispositivo",
+#     y por tanto ATTR{}, MODE=, GROUP= y %S%p no sirven de nada. La unica via
+#     desde udev es un RUN+= con la ruta escrita a mano.
+#
+#     Comprobado ademas en esta maquina que el dispositivo WMI de la bateria
+#
+#       /sys/bus/wmi/devices/79772EC5-04B1-4BFD-843C-61E7F77B6CC9-4
+#
+#     NO tiene enlace 'driver' (udevadm info -a lo muestra como DRIVER==""):
+#     el modulo evalua el metodo WMI por GUID sin hacer bind. Eso significa
+#     que NO hay eventos bind/unbind sobre los que enganchar la regla.
+#
+#     De ahi que hagan falta TRES cosas y no una:
+#
+#       (a) regla sobre el dispositivo WMI (abajo): cubre la enumeracion del
+#           bus WMI. Va guardada con TEST== porque en un arranque limpio el
+#           modulo casi seguro todavia no se ha cargado y health_mode aun no
+#           existe; sin la guarda, chmod fallaria y ensuciaria el journal.
+#
+#       (b) regla sobre el evento de modulo (abajo): ES LA QUE CUBRE DE VERDAD
+#           el ciclo 'modprobe -r acer_wmi_battery && modprobe acer_wmi_battery'.
+#           /sys/module/acer_wmi_battery SI es un dispositivo para udev
+#           (comprobado: 'udevadm info -p /sys/module/acer_wmi_battery' da
+#           U: module, DEVPATH=/module/acer_wmi_battery), asi que cargar el
+#           modulo genera un evento add en SUBSYSTEM=="module".
+#           Ojo: el kernel emite ese evento en mod_sysfs_setup(), es decir
+#           ANTES de ejecutar la funcion init del modulo, que es la que crea
+#           health_mode. Por eso el RUN+= lleva un reintento corto y acotado
+#           (5 intentos x 0,2 s = 1 s como maximo) en vez de un chmod a secas.
+#
+#       (c) tmpfiles.d (packaging/nitro-gekko.conf): la red de seguridad del
+#           ARRANQUE. Si el modulo se carga por autocarga de modalias mientras
+#           udev ya proceso los eventos, o si la regla (b) pierde la carrera,
+#           systemd-tmpfiles-setup.service vuelve a poner los permisos.
+#           tmpfiles no ve eventos: solo actua al arrancar (y cuando el
+#           instalador ejecuta systemd-tmpfiles --create). udev ve eventos
+#           pero puede llegar antes de que exista el fichero. Cada uno tapa
+#           el agujero del otro; por eso estan los dos.
+#
+#     La solucion tecnicamente mas limpia seria una unidad systemd oneshot
+#     ordenada despues del modulo (o TAG+="systemd" + ENV{SYSTEMD_WANTS}).
+#     Se ha descartado en esta version para no anadir una unidad mas al
+#     paquete: con (a)+(b)+(c) el caso practico queda cubierto.
+# ---------------------------------------------------------------------------
+
+# (a) Dispositivo WMI de la bateria. GUID verificado en el equipo.
+ACTION=="add|change|bind", SUBSYSTEM=="wmi", ATTR{guid}=="79772EC5-04B1-4BFD-843C-61E7F77B6CC9", \
+    TEST=="/sys/bus/wmi/drivers/acer-wmi-battery/health_mode", \
+    RUN+="/usr/bin/chgrp wheel /sys/bus/wmi/drivers/acer-wmi-battery/health_mode", \
+    RUN+="/usr/bin/chmod 0664 /sys/bus/wmi/drivers/acer-wmi-battery/health_mode"
+
+#     OJO al editar esta regla: dentro de un valor de udev, '$' introduce una
+#     sustitucion de udev ($kernel, $devpath, ...), asi que una variable de
+#     shell como $p hace que udev rechace la regla entera con "invalid
+#     substitution type" (comprobado con 'udevadm verify'). Habria que
+#     escribirla '$$p'. Aqui se ha optado por no usar variables de shell y
+#     repetir la ruta completa: mas largo, pero imposible de romper.
+#     Tampoco se pueden meter comillas dobles dentro del valor: el valor de
+#     udev acaba en la primera comilla doble y no hay escape con backslash.
+#
+# (b) Carga del modulo. Reintento acotado porque el evento llega antes de que
+#     el init del modulo haya creado el atributo.
+ACTION=="add", SUBSYSTEM=="module", KERNEL=="acer_wmi_battery", \
+    RUN+="/usr/bin/sh -c 'for i in 1 2 3 4 5; do if [ -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]; then /usr/bin/chgrp wheel /sys/bus/wmi/drivers/acer-wmi-battery/health_mode; /usr/bin/chmod 0664 /sys/bus/wmi/drivers/acer-wmi-battery/health_mode; exit 0; fi; /usr/bin/sleep 0.2; done; exit 0'"
+
+# ---------------------------------------------------------------------------
+#  4) LO QUE NO SE RESUELVE AQUI (esta en packaging/nitro-gekko.conf)
+#
+#     /sys/firmware/acpi/platform_profile
+#         Es la interfaz LEGACY del mismo perfil. No es un dispositivo udev:
+#         cuelga de /sys/firmware, que no tiene ni subsistema ni uevents, asi
+#         que no hay ninguna regla posible que la alcance. Se resuelve con
+#         tmpfiles.d. (Y es la ruta importante: es la que notifica POLLPRI y
+#         la que vigila power-profiles-daemon.)
+#
+#     /sys/devices/system/cpu/intel_pstate/no_turbo
+#         Atributo global del driver intel_pstate colgado de
+#         /sys/devices/system/cpu, que tampoco es un dispositivo udev con
+#         subsistema propio al que engancharse de forma fiable. tmpfiles.d.
+# ---------------------------------------------------------------------------

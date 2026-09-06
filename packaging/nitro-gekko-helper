@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""Helper privilegiado de Nitro Gekko.
+
+Se ejecuta como root a traves de `pkexec`, que a su vez pide la contrasena
+mediante el agente de polkit de GNOME (el "portal"). La aplicacion NUNCA
+escribe en /sys directamente cuando no tiene permiso: llama aqui.
+
+=== POR QUE LA INTERFAZ ES ASI DE ESTRECHA ===
+
+La version anterior recibia la RUTA como argumento:
+
+    pkexec nitro-gekko-helper /sys/lo/que/sea  valor
+
+Eso es un agujero de escalada de privilegios de manual: cualquier proceso que
+corra como el usuario (una pestana del navegador comprometida, un binario de
+un juego, un script descargado) podria pedirle a este helper que escribiera
+como root en CUALQUIER fichero del sistema. El dialogo de contrasena no
+protege nada si el usuario ya autorizo una vez y polkit tiene la sesion
+cacheada, y ademas el usuario no puede saber que ruta se va a tocar mirando
+el dialogo.
+
+Aqui la ruta NO viene de fuera. El helper acepta ACCIONES CON NOMBRE y
+guarda internamente la lista blanca de rutas. Lo unico que cruza la frontera
+de privilegio es un nombre de accion de un conjunto cerrado y un valor que se
+valida contra el propio kernel antes de escribirlo.
+
+=== USO ===
+
+    nitro-gekko-helper perfil   <nombre>   # uno de los 'choices' del kernel
+    nitro-gekko-helper pl1      <vatios>   # entero, rango duro comprobado abajo
+    nitro-gekko-helper bateria  <0|1>      # 1 = limitar la carga al 80 %
+    nitro-gekko-helper turbo    <0|1>      # 1 = no_turbo (turbo DESACTIVADO)
+
+  Teclado y extras del EC (solo con el driver linuwu_sense cargado):
+
+    nitro-gekko-helper rgb_efecto      <modo,vel,brillo,dir,R,G,B>
+    nitro-gekko-helper rgb_zonas       <RRGGBB,RRGGBB,RRGGBB,RRGGBB,brillo>
+    nitro-gekko-helper retro_timeout   <0|1>   # 1 = el teclado se apaga solo
+    nitro-gekko-helper usb_carga       <0|10|20|30>
+    nitro-gekko-helper calibracion     <0|1>
+    nitro-gekko-helper sonido_arranque <0|1>
+
+=== CODIGOS DE SALIDA ===
+
+    0   exito
+    1   error de uso (accion desconocida, faltan argumentos)
+    2   valor invalido (fuera de rango, perfil inexistente)
+    3   la ruta no existe en este sistema (falta el driver o el modulo)
+    4   el kernel o el firmware rechazo la escritura
+    5   no se esta ejecutando como root
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# Lista blanca. Estas son las UNICAS rutas que este programa puede tocar.
+# No se construyen a partir de nada que venga de fuera.
+# --------------------------------------------------------------------------
+
+PERFIL_LEGACY = Path("/sys/firmware/acpi/platform_profile")
+PERFIL_CLASE = Path("/sys/class/platform-profile/platform-profile-0/profile")
+PERFIL_CHOICES = Path("/sys/class/platform-profile/platform-profile-0/choices")
+PERFIL_CHOICES_LEGACY = Path("/sys/firmware/acpi/platform_profile_choices")
+
+PL1_MSR = Path("/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw")
+PL1_MMIO = Path("/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw")
+PL1_MAX = Path("/sys/class/powercap/intel-rapl:0/constraint_0_max_power_uw")
+
+BATERIA = Path("/sys/bus/wmi/drivers/acer-wmi-battery/health_mode")
+TURBO = Path("/sys/devices/system/cpu/intel_pstate/no_turbo")
+
+# --- linuwu-sense: teclado RGB y extras del EC -----------------------------
+# Solo existen con el driver linuwu_sense cargado (packaging/instalar-rgb.sh).
+# Con el acer_wmi del kernel estas rutas no estan, y las acciones devuelven 3.
+ACER_WMI = Path("/sys/devices/platform/acer-wmi")
+RGB_EFECTO = ACER_WMI / "four_zoned_kb" / "four_zone_mode"
+RGB_ZONAS = ACER_WMI / "four_zoned_kb" / "per_zone_mode"
+RETRO_TIMEOUT = ACER_WMI / "nitro_sense" / "backlight_timeout"
+USB_CARGA = ACER_WMI / "nitro_sense" / "usb_charging"
+CALIBRACION = ACER_WMI / "nitro_sense" / "battery_calibration"
+SONIDO_ARRANQUE = ACER_WMI / "nitro_sense" / "boot_animation_sound"
+
+# Rango duro del PL1 en vatios. El minimo evita que un fallo deje la maquina
+# inutilizable; el maximo es el limite que el firmware Acer trae de fabrica
+# (65 W), asi que este helper nunca puede subir la potencia por encima de lo
+# que el propio fabricante ya permitia.
+PL1_MIN_W = 10
+PL1_MAX_W = 65
+
+
+def salir(codigo: int, mensaje: str) -> None:
+    """Escribe en stderr y termina. La app distingue por el codigo."""
+    print(mensaje, file=sys.stderr)
+    raise SystemExit(codigo)
+
+
+def escribir(ruta: Path, valor: str) -> None:
+    """Escritura sin buffer intermedio. sysfs quiere un write() por valor."""
+    if not ruta.exists():
+        salir(3, f"La ruta {ruta} no existe en este sistema.")
+    try:
+        with open(ruta, "w", encoding="ascii") as fh:
+            fh.write(valor)
+    except OSError as err:
+        salir(4, f"El kernel rechazo la escritura en {ruta}: {err.strerror}.")
+
+
+def leer(ruta: Path) -> str | None:
+    try:
+        return ruta.read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+
+
+# --------------------------------------------------------------------------
+# Acciones
+# --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# Cada accion se parte en dos: validar y aplicar.
+#
+# La validacion corre ANTES de comprobar root, y eso es intencionado: si el
+# valor es basura, queremos rechazarlo sin que polkit llegue a molestar al
+# usuario con el dialogo de contrasena. Todo lo que la validacion necesita
+# leer (la lista de perfiles del kernel) es legible por cualquiera, asi que no
+# hace falta privilegio para decidir que un valor es invalido.
+# --------------------------------------------------------------------------
+
+
+def validar_perfil(valor: str) -> str:
+    """El conjunto valido se lee del PROPIO KERNEL, no de una lista de aqui.
+
+    Si manana el driver expone otros perfiles esto sigue siendo correcto, y si
+    alguien inventa un perfil se rechaza.
+    """
+    crudo = leer(PERFIL_CHOICES) or leer(PERFIL_CHOICES_LEGACY)
+    if crudo is None:
+        salir(3, "No se pudo leer la lista de perfiles del kernel.")
+    validos = crudo.split()
+    if valor not in validos:
+        salir(2, f"Perfil invalido: {valor!r}. Validos: {' '.join(validos)}")
+    return valor
+
+
+def aplicar_perfil(valor: str) -> None:
+    # Se escribe en la ruta legacy porque es la que notifica a los vigilantes
+    # de ficheros (power-profiles-daemon monta ahi su GFileMonitor). La ruta
+    # de clase se usa solo si la legacy no existiera.
+    destino = PERFIL_LEGACY if PERFIL_LEGACY.exists() else PERFIL_CLASE
+    escribir(destino, valor)
+
+
+def validar_pl1(valor: str) -> str:
+    try:
+        vatios = int(valor, 10)
+    except ValueError:
+        salir(2, f"PL1 invalido: {valor!r}. Se esperaba un entero de vatios.")
+    if not PL1_MIN_W <= vatios <= PL1_MAX_W:
+        salir(2, f"PL1 fuera de rango: {vatios} W. Permitido {PL1_MIN_W}..{PL1_MAX_W} W.")
+    return str(vatios * 1_000_000)
+
+
+def aplicar_pl1(uw: str) -> None:
+    # El MSR es el que de verdad manda (medido: con MSR=45 W la carga
+    # sostenida se asienta en 41.9 W aunque el MMIO diga 70 W). Si el MSR
+    # falla, abortamos; si falla solo el MMIO seguimos, porque el firmware lo
+    # reescribe en cada cambio de perfil de todas formas.
+    escribir(PL1_MSR, uw)
+    if PL1_MMIO.exists():
+        try:
+            with open(PL1_MMIO, "w", encoding="ascii") as fh:
+                fh.write(uw)
+        except OSError:
+            pass  # No es fatal: el MSR ya quedo puesto.
+
+
+def validar_binario(nombre: str):
+    """Fabrica de validadores para los interruptores 0/1."""
+
+    def validar(valor: str) -> str:
+        if valor not in ("0", "1"):
+            salir(2, f"Valor invalido para {nombre}: {valor!r}. Se esperaba 0 o 1.")
+        return valor
+
+    return validar
+
+
+def aplicar_bateria(valor: str) -> None:
+    """1 activa el limite de carga al 80 %, 0 lo quita."""
+    escribir(BATERIA, valor)
+
+
+def aplicar_turbo(valor: str) -> None:
+    """Escribe no_turbo: 1 DESACTIVA el turbo, 0 lo activa."""
+    escribir(TURBO, valor)
+
+
+# --------------------------------------------------------------------------
+# Teclado RGB de 4 zonas y extras del EC (driver linuwu_sense)
+# --------------------------------------------------------------------------
+
+
+def validar_rgb_efecto(valor: str) -> str:
+    """Formato: modo,velocidad,brillo,direccion,R,G,B
+
+    Rangos que impone el propio driver (linuwu_sense.c, four_zoned_rgb_kb_store):
+      modo 0-7, velocidad 0-9, brillo 0-100, direccion 0-2, R/G/B 0-255.
+    Ademas los modos 3 (Onda) y 4 (Desplazamiento) EXIGEN direccion > 0: con 0
+    el driver devuelve -EINVAL. Se valida aqui para dar un mensaje util en vez
+    de un error de E/S opaco.
+    """
+    partes = valor.split(",")
+    if len(partes) != 7:
+        salir(2, "Efecto RGB invalido: se esperan 7 valores "
+                 "modo,velocidad,brillo,direccion,R,G,B")
+    try:
+        modo, vel, brillo, direccion, r, g, b = (int(p, 10) for p in partes)
+    except ValueError:
+        salir(2, "Efecto RGB invalido: los 7 valores deben ser enteros.")
+    for nombre, v, lo, hi in (
+        ("modo", modo, 0, 7), ("velocidad", vel, 0, 9), ("brillo", brillo, 0, 100),
+        ("direccion", direccion, 0, 2), ("rojo", r, 0, 255),
+        ("verde", g, 0, 255), ("azul", b, 0, 255),
+    ):
+        if not lo <= v <= hi:
+            salir(2, f"Efecto RGB: {nombre}={v} fuera de rango [{lo}..{hi}].")
+    if modo in (3, 4) and direccion == 0:
+        salir(2, f"El modo {modo} necesita direccion 1 o 2 (el driver rechaza 0).")
+    return f"{modo},{vel},{brillo},{direccion},{r},{g},{b}"
+
+
+def aplicar_rgb_efecto(valor: str) -> None:
+    escribir(RGB_EFECTO, valor)
+
+
+def validar_rgb_zonas(valor: str) -> str:
+    """Formato: RRGGBB,RRGGBB,RRGGBB,RRGGBB,brillo  (4 zonas + brillo 0-100)."""
+    partes = valor.split(",")
+    if len(partes) != 5:
+        salir(2, "Color por zonas invalido: se esperan 4 colores y el brillo.")
+    for i, color in enumerate(partes[:4], 1):
+        if len(color) != 6 or any(c not in "0123456789abcdefABCDEF" for c in color):
+            salir(2, f"Zona {i}: '{color}' no es un color RRGGBB valido.")
+    try:
+        brillo = int(partes[4], 10)
+    except ValueError:
+        salir(2, f"Brillo invalido: {partes[4]!r}")
+    if not 0 <= brillo <= 100:
+        salir(2, f"Brillo fuera de rango: {brillo} (permitido 0..100).")
+    return ",".join(p.lower() for p in partes[:4]) + f",{brillo}"
+
+
+def aplicar_rgb_zonas(valor: str) -> None:
+    escribir(RGB_ZONAS, valor)
+
+
+def validar_usb_carga(valor: str) -> str:
+    """Umbral de bateria por debajo del cual deja de cargar por USB apagado.
+
+    El driver solo acepta 0, 10, 20 o 30; cualquier otro valor lo interpreta
+    como 0 en silencio, asi que aqui se rechaza explicitamente.
+    """
+    if valor not in ("0", "10", "20", "30"):
+        salir(2, f"Carga USB invalida: {valor!r}. Valores: 0, 10, 20 o 30.")
+    return valor
+
+
+def aplicar_ruta_binaria(ruta: Path):
+    def aplicar(valor: str) -> None:
+        escribir(ruta, valor)
+
+    return aplicar
+
+
+#: accion -> (validador, aplicador). El validador devuelve el valor ya
+#: normalizado que recibira el aplicador.
+ACCIONES = {
+    "perfil": (validar_perfil, aplicar_perfil),
+    "pl1": (validar_pl1, aplicar_pl1),
+    "bateria": (validar_binario("bateria"), aplicar_bateria),
+    "turbo": (validar_binario("turbo"), aplicar_turbo),
+    # Teclado y extras del EC (necesitan linuwu_sense)
+    "rgb_efecto": (validar_rgb_efecto, aplicar_rgb_efecto),
+    "rgb_zonas": (validar_rgb_zonas, aplicar_rgb_zonas),
+    "retro_timeout": (validar_binario("retro_timeout"), aplicar_ruta_binaria(RETRO_TIMEOUT)),
+    "usb_carga": (validar_usb_carga, aplicar_ruta_binaria(USB_CARGA)),
+    "calibracion": (validar_binario("calibracion"), aplicar_ruta_binaria(CALIBRACION)),
+    "sonido_arranque": (validar_binario("sonido_arranque"), aplicar_ruta_binaria(SONIDO_ARRANQUE)),
+}
+
+
+def main(argv: list[str]) -> None:
+    if len(argv) != 3:
+        salir(
+            1,
+            "Uso: nitro-gekko-helper <accion> <valor>\n"
+            "Este programa lo invoca Nitro Gekko a traves de pkexec; no esta "
+            "pensado para uso manual.",
+        )
+
+    accion, valor = argv[1], argv[2]
+
+    if accion not in ACCIONES:
+        salir(1, f"Accion desconocida: {accion!r}. Validas: {' '.join(ACCIONES)}")
+
+    # Rechazamos valores absurdamente largos antes de mirarlos siquiera.
+    if len(valor) > 64:
+        salir(2, "Valor demasiado largo.")
+
+    validar, aplicar = ACCIONES[accion]
+
+    # Validar PRIMERO, con o sin privilegio: asi un valor invalido se rechaza
+    # sin que polkit llegue a pedirle la contrasena al usuario para nada.
+    normalizado = validar(valor)
+
+    # --solo-validar permite a la aplicacion comprobar un valor sin disparar
+    # el dialogo de autenticacion.
+    if os.environ.get("NITRO_GEKKO_SOLO_VALIDAR") == "1":
+        raise SystemExit(0)
+
+    if os.geteuid() != 0:
+        salir(
+            5,
+            "Este helper necesita privilegios de root. Se invoca con pkexec, "
+            "que pedira la contrasena por el dialogo de GNOME.",
+        )
+
+    aplicar(normalizado)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Lanzador de Nitro Gekko para probar SIN instalar nada.
+# Añade src/ al PYTHONPATH y arranca el paquete tal cual esta en el repositorio.
+set -euo pipefail
+RAIZ="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+export PYTHONPATH="$RAIZ/src${PYTHONPATH:+:$PYTHONPATH}"
+# Para que el icono simbolico del repositorio se encuentre sin instalarlo.
+export XDG_DATA_DIRS="$RAIZ/data${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+exec python3 -m gekkonitro "$@"

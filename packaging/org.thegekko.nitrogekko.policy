@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD polkit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+
+<!--
+  Politica polkit de Nitro Gekko.
+
+  UNA SOLA ACCION, y esto es deliberado, no pereza: pkexec resuelve la accion
+  a partir de la anotacion org.freedesktop.policykit.exec.path, que apunta a
+  UN ejecutable. Un ejecutable = una accion. Para tener autorizacion por
+  operacion (perfil / potencia / bateria por separado) harian falta varios
+  binarios helper, o un servicio D-Bus con pkcheck por metodo.
+
+  Se eligio un solo helper con una interfaz cerrada porque la seguridad real
+  aqui no la da la granularidad de la accion, sino que el helper NO acepta
+  rutas: solo cuatro nombres de accion y un valor que valida contra el propio
+  kernel. Ver packaging/SEGURIDAD.md.
+
+  auth_admin_keep en allow_active es lo que hace esto usable: pide la
+  contrasena UNA vez y la cachea unos minutos para la sesion activa. Sin eso,
+  mover el deslizador del PL1 pediria contrasena en cada paso.
+-->
+
+<policyconfig>
+
+  <vendor>Nitro Gekko</vendor>
+  <vendor_url>https://github.com/the-gekko/nitro-gekko</vendor_url>
+  <icon_name>org.thegekko.nitrogekko</icon_name>
+
+  <action id="org.thegekko.nitrogekko.aplicar">
+    <description xml:lang="es">Aplicar ajustes de hardware del portatil</description>
+    <description>Apply laptop hardware settings</description>
+    <message xml:lang="es">Se necesita autenticacion para cambiar el perfil termico, el limite de potencia de la CPU o el limite de carga de la bateria.</message>
+    <message>Authentication is required to change the thermal profile, the CPU power limit or the battery charge limit.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/nitro-gekko/nitro-gekko-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+</policyconfig>

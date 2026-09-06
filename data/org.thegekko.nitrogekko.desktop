@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Nitro Gekko
+GenericName=Control del portatil
+Comment=Perfil termico, ventiladores, potencia de CPU y salud de la bateria del Acer Nitro
+Keywords=ventilador;fan;rpm;perfil;termico;bateria;potencia;turbo;acer;nitro;refrigeracion;
+Exec=nitro-gekko
+Icon=org.thegekko.nitrogekko
+Terminal=false
+Categories=GTK;Settings;HardwareSettings;
+StartupNotify=true
+StartupWMClass=org.thegekko.nitrogekko
+X-GNOME-UsesNotifications=false

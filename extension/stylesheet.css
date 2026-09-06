@@ -1,0 +1,39 @@
+/* stylesheet.css — Nitro Gekko
+ *
+ * Sólo lo imprescindible. El resto lo pone el tema de GNOME Shell: cuanto
+ * menos se toque, mejor se integra.
+ *
+ * REGLA IMPORTANTE: aquí NO se fijan colores de texto. GNOME Shell 50 no marca
+ * el tema claro con ninguna clase CSS: carga dos hojas distintas y enteras
+ * (gnome-shell-light.css / gnome-shell-dark.css). Desde una extensión no se
+ * puede distinguir una de otra, así que cualquier color escrito a fuego acaba
+ * ilegible en una de las dos. Se usa 'opacity', que atenúa bien sobre
+ * cualquier fondo, y se deja que el color lo herede el tema.
+ */
+
+/* Filas de sólo lectura del menú (RPM y aviso del fallo de PPD).
+ * Al no ser pulsables, GNOME ya les pone la clase 'popup-inactive-menu-item',
+ * que el tema colorea correctamente en claro (#222226) y en oscuro (#ffffff).
+ * Aquí sólo se ajusta el tamaño y se atenúan un poco para que se lean como
+ * información y no como algo en lo que se puede hacer clic. */
+.nitro-gekko-fila-informativa {
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+/* RPM de referencia medidas en el AN17-51, a la derecha de cada perfil. */
+.nitro-gekko-rpm-referencia {
+    font-size: 0.8em;
+    /* Cifras de ancho fijo: así el número no baila al refrescarse.
+     * El propio tema del Shell usa font-feature-settings, está soportado. */
+    font-feature-settings: "tnum";
+    opacity: 0.6;
+    padding: 0 0.5em;
+}
+
+/* Aviso del perfil que rompe el menú de energía de GNOME.
+ * #e5a50a es el amarillo de aviso de la paleta Adwaita que el propio Shell
+ * usa; es legible tanto sobre fondo claro como oscuro. */
+.nitro-gekko-icono-aviso {
+    color: #e5a50a;
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>Nitro Gekko</title>
+  <!--
+    Icono simbolico: un medidor con la aguja alta.
+    Se descartaron las variantes de ventilador de aspas tras renderizarlas a
+    16 px: con barrido se leian como un molinete (lectura desafortunada) y sin
+    barrido se convertian en una cruz o un asterisco. El medidor es la unica
+    forma que se mantiene nitida en la rejilla de 16 px y ademas encaja con el
+    lenguaje visual de los perfiles de energia de GNOME.
+    Monocromo con el gris estandar de los simbolicos; el tema lo recolorea.
+  -->
+  <g fill="none" stroke="#2e3436" stroke-width="2" stroke-linecap="round">
+    <path d="M3.51,12.51 A5.7,5.7 0 1 1 12.49,12.51"/>
+    <path d="M8,9 L4.91,6.01"/>
+  </g>
+  <circle cx="8" cy="9" r="1.5" fill="#2e3436"/>
+</svg>

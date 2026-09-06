@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+# El modulo compilado es un binario de 900 KB atado a UNA version exacta de
+# kernel (vermagic 7.2.3-zen1-2-zen): no sirve para nadie mas y no debe ir al
+# repositorio. El fuente parcheado (rgb/linuwu_sense.c) si se conserva.
+rgb/*.ko
+# Restos de la compilacion del modulo dentro de rgb/
+rgb/src/*.o
+rgb/src/.*.cmd
+rgb/src/*.mod*
+rgb/.*.cmd
+rgb/Module.symvers
+rgb/modules.order
