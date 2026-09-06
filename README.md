@@ -24,6 +24,26 @@
 
 ---
 
+## Por donde empezar
+
+**Si solo quieres usarlo:** [Requisitos](#requisitos) ·
+[Instalacion](#instalacion) · [Si tu Acer es otro
+modelo](#si-tu-acer-es-otro-modelo) · [Desinstalacion](#desinstalacion).
+
+**Si vas a tocar el codigo** —persona o agente de IA—: lee antes [Como tratar
+este programa](#como-tratar-este-programa). No es un adorno: aqui se pone un
+modulo del kernel en la lista negra de otro, y hay cambios que no fallan hasta
+el siguiente arranque.
+
+**Este README es el unico documento del repositorio.** Los apuntes largos que
+antes vivian en `packaging/SEGURIDAD.md` y en `extension/README.md`, y el
+`AGENTS.md` con el contrato de trabajo, se quedan en la copia local y no se
+publican; lo imprescindible de los dos primeros esta recogido aqui, en
+[Seguridad y permisos](#seguridad-y-permisos) y en [La extension de GNOME
+Shell](#la-extension-de-gnome-shell).
+
+---
+
 ## Que es
 
 Una aplicacion de escritorio y una extension de GNOME Shell que ponen en un
@@ -197,8 +217,8 @@ equipo y no lecturas:
   **la aplicacion no podra devolverte tu valor de fabrica**: tendrias que
   reiniciar o escribirlo a mano en
   `intel-rapl:0/constraint_0_power_limit_uw`. El minimo (10 W) es el que
-  protege de verdad y ese vale para cualquier chip. Ver
-  [`packaging/SEGURIDAD.md`](packaging/SEGURIDAD.md).
+  protege de verdad y ese vale para cualquier chip. Ver [Sobre el rango del
+  PL1](#sobre-el-rango-del-pl1-10-a-65-w).
 - El **boton del logo de la marca**. Aqui emite `KEY_PRESENTATION`; en tu
   equipo puede ser otra tecla. Averigualo con
   `sudo python3 packaging/capturar-tecla.py` y cambia el atajo a mano.
@@ -320,7 +340,8 @@ Lo llama la aplicacion **y tambien la extension de GNOME Shell**: para los
 dos perfiles que `power-profiles-daemon` no conoce (`quiet` y
 `balanced-performance`) la extension lanza el mismo `pkexec` con el mismo
 helper, de forma asincrona. Los otros tres los cambia sin contrasena por
-D-Bus. Detalles y medidas en [`extension/README.md`](extension/README.md).
+D-Bus. Detalles y medidas en [La extension de GNOME
+Shell](#la-extension-de-gnome-shell).
 
 La accion polkit es `org.thegekko.nitrogekko.aplicar`, con `auth_admin_keep`:
 GNOME pide la contrasena **una vez** y la recuerda unos minutos para la sesion
@@ -336,7 +357,7 @@ Ese modo instala una regla de `udev` y un `tmpfiles.d` que abren **seis rutas
 de `/sys` al grupo `wheel`**. Es comodo y es peor: cualquier proceso que corra
 con tu uid puede entonces escribir ahi en silencio.
 Que se abre exactamente, que puede hacer un proceso con ello, y por que **no**
-se abre `energy_uj`: [`packaging/SEGURIDAD.md`](packaging/SEGURIDAD.md).
+se abre `energy_uj`: [Seguridad y permisos](#seguridad-y-permisos).
 
 Para probar sin instalar nada, el repositorio trae su propio lanzador:
 
@@ -363,14 +384,16 @@ el momento, sin esperar a un reinicio.
 
 ## Cosas raras de este portatil que conviene saber
 
-Estan documentadas dentro del codigo, pero por si te pican:
+Estan documentadas dentro del codigo, y **los numeros no son decorativos**: los
+comentarios de `src/gekkonitro/` citan «gotcha 1», «gotcha 4», «gotcha 6» y
+«gotcha 7», y son estos.
 
-- **Escribir `balanced-performance` deja el menu de energia de GNOME en blanco.**
-  Es un fallo de `power-profiles-daemon` 0.30: su tabla interna compara con
+1. **Escribir `balanced-performance` deja el menu de energia de GNOME en
+  blanco.** Es un fallo de `power-profiles-daemon` 0.30: su tabla interna compara con
   `balanced_performance`, con guion bajo, y al no encontrarlo cae en
   `g_return_val_if_reached()` y deja `ActiveProfile` en `UNSET`. La aplicacion
   **avisa con un icono** en ese perfil concreto en vez de esconderlo.
-- **El firmware pone el PL1 muy por encima del TDP del chip.** El i7-13620H es
+2. **El firmware pone el PL1 muy por encima del TDP del chip.** El i7-13620H es
   de 45 W nominales y Acer lo deja en **65 W (MSR) / 70 W (MMIO)**. Medido en
   este equipo con carga sostenida a 16 hilos: con 65 W se queda en 63 W y
   85 °C; **con 45 W baja a 41,9 W y 66 °C**, sin throttling y con mucho menos
@@ -380,17 +403,24 @@ Estan documentadas dentro del codigo, pero por si te pican:
   `intel-rapl:0/constraint_0_max_power_uw` y usa esa. Si tu CPU declara 55 W,
   el limite sera 55 W; si tu firmware ya respeta el nominal, el paso se salta;
   y si no hay RAPL de Intel (un Acer con CPU AMD), no instala nada.
-- **El PL1 se reescribe solo al cambiar de perfil** (por MMIO: `balanced`
+3. **No hay vatios de CPU.** `energy_uj` esta cerrado por la mitigacion de
+  PLATYPUS (CVE-2020-8694) y no se va a abrir. No es una funcion pendiente: ver
+  [Por que no se abre energy_uj](#por-que-no-se-abre-energy_uj-en-ningun-modo).
+4. **El PL1 se reescribe solo al cambiar de perfil** (por MMIO: `balanced`
   → 70 W, `performance` → 100 W). El que manda es el MSR, y por eso el MMIO
   suele quedar descolgado. De ahi el interruptor «Reaplicar PL1 al cambiar de
   perfil».
-- **El numero de `hwmon` cambia entre arranques.** La aplicacion resuelve el
-  ventilador buscando por nombre (`acer`), nunca por numero.
-- **No hay vatios de CPU.** `energy_uj` esta cerrado por la mitigacion de
-  PLATYPUS (CVE-2020-8694) y no se va a abrir. Ver `packaging/SEGURIDAD.md`.
-- **La temperatura de la bateria se divide entre 1000 y ya esta.** El valor
+5. **La temperatura de la bateria se divide entre 1000 y ya esta.** El valor
   bruto `33000` son 33,0 °C. La formula `(v-2731)*100` que aparece en el driver
   es su conversion interna y aqui daria un disparate.
+6. **El numero de `hwmon` cambia entre arranques.** La aplicacion resuelve el
+  ventilador buscando por nombre (`acer`), nunca por numero.
+7. **La ruta legacy del perfil es la que notifica.**
+  `/sys/firmware/acpi/platform_profile` y
+  `/sys/class/platform-profile/platform-profile-0/profile` son el mismo dato,
+  pero solo la primera avisa de los cambios, y es la que vigila
+  `power-profiles-daemon`. Por eso se lee de la de `/sys/class`, que es un pelin
+  mas barata, y se **escribe siempre en la legacy**.
 
 ### RPM tipicas medidas por perfil
 
@@ -526,6 +556,877 @@ lanzas sin permisos. Cuando te diga el nombre de la tecla (`XF86Algo`), ponlo
 en *Configuracion > Teclado > Atajos personalizados* con el comando
 `nitro-gekko`, o cambia `XF86Presentation` por el tuyo en
 `packaging/preparar-sistema.sh`.
+
+---
+
+## Seguridad y permisos
+
+Nitro Gekko necesita escribir en ficheros de `/sys` que son `0644 root:root`.
+Eso es un problema de privilegios y hay exactamente dos maneras de resolverlo.
+El proyecto trae las dos, y **no son intercambiables**.
+
+| | Modo **polkit** (por defecto) | Modo **udev** (`--con-udev`) |
+|---|---|---|
+| Que instala | `nitro-gekko-helper` + una politica polkit | reglas udev + `tmpfiles.d` |
+| Permisos de `/sys` | siguen `0644 root:root` | seis rutas pasan a `0664 root:wheel` |
+| Quien puede escribir | solo root, previa autenticacion | **cualquier proceso** de un usuario de `wheel` |
+| Contrasena | una vez, cacheada unos minutos | ninguna, nunca |
+| Se instala con | `sudo ./packaging/install.sh` | `sudo ./packaging/install.sh --con-udev` |
+
+Si ejecutas `install.sh` sin banderas **no se abre ni un permiso de `/sys`**: se
+instala un programa auxiliar que corre como root bajo demanda y una politica que
+dice quien puede invocarlo.
+
+### Modo polkit, el de por defecto
+
+```
+   aplicacion (uid 1000)                    root
+   ---------------------                    ----
+   sysfs.py::_escribir()
+      |
+      |  os.access(ruta, W_OK)?  ---- si -->  escritura directa (modo udev)
+      |  no
+      v
+   pkexec /usr/lib/nitro-gekko/nitro-gekko-helper <accion> <valor>
+      |                                        |
+      |   polkit: org.thegekko.nitrogekko.aplicar
+      |   auth_admin_keep -> dialogo de GNOME  |
+      |                                        v
+      |                              valida el valor y escribe
+      |                              en UNA ruta de su lista blanca
+      <--------- codigo de salida --------------
+```
+
+Piezas: `packaging/nitro-gekko-helper` va a
+`/usr/lib/nitro-gekko/nitro-gekko-helper` (`0755 root:root`) y
+`packaging/org.thegekko.nitrogekko.policy` a `/usr/share/polkit-1/actions/`
+(`0644 root:root`), con la accion `org.thegekko.nitrogekko.aplicar`.
+
+Al helper lo invocan **dos piezas, no una**: la aplicacion y tambien la
+extension de GNOME Shell, para los dos perfiles que `power-profiles-daemon` no
+conoce. Es el mismo ejecutable, la misma accion y la misma interfaz cerrada, y
+de las diez acciones la extension solo usa `perfil`. Lo que si conviene tener
+presente es que **la cache de `auth_admin_keep` la comparten las dos**:
+autorizar desde Configuracion rapida deja tambien a la aplicacion sin dialogo
+durante esos minutos.
+
+### Lo que hace que esto sea seguro: el helper no acepta rutas
+
+Una version anterior recibia la ruta como argumento:
+
+```
+pkexec nitro-gekko-helper /sys/lo/que/sea  valor      # AGUJERO
+```
+
+Eso es escalada de privilegios de manual: con la autorizacion cacheada,
+cualquier proceso del usuario (una pestana del navegador, un juego, un
+`npm install`) podia hacer que root escribiera en cualquier fichero. Y el
+usuario no podia saber que ruta se iba a tocar mirando el dialogo.
+
+Hoy lo unico que cruza la frontera de privilegio son **dos cadenas**: un nombre
+de accion de un conjunto cerrado de diez, y un valor. Las rutas son constantes
+del propio fichero del helper.
+
+| Accion | Ruta (constante en el helper) | Valores aceptados |
+|---|---|---|
+| `perfil` | `/sys/firmware/acpi/platform_profile` | uno de los que lista el kernel en `platform_profile_choices` |
+| `pl1` | `intel-rapl:0` y `intel-rapl-mmio:0` `constraint_0_power_limit_uw` | entero decimal 10..65 (vatios) |
+| `bateria` | `acer-wmi-battery/health_mode` | `0` o `1` |
+| `turbo` | `intel_pstate/no_turbo` | `0` o `1` |
+| `rgb_efecto` | `acer-wmi/four_zoned_kb/four_zone_mode` | `modo,vel,brillo,dir,R,G,B` con rango por campo |
+| `rgb_zonas` | `acer-wmi/four_zoned_kb/per_zone_mode` | 4 colores `RRGGBB` + brillo 0..100 |
+| `retro_timeout` | `acer-wmi/nitro_sense/backlight_timeout` | `0` o `1` |
+| `usb_carga` | `acer-wmi/nitro_sense/usb_charging` | `0`, `10`, `20` o `30` |
+| `calibracion` | `acer-wmi/nitro_sense/battery_calibration` | `0` o `1` |
+| `sonido_arranque` | `acer-wmi/nitro_sense/boot_animation_sound` | `0` o `1` |
+
+Propiedades que se mantienen a proposito:
+
+1. **Ningun valor llega a `/sys` tal cual.** Todos los validadores
+   *reconstruyen* lo que escriben a partir de enteros ya comprobados o de una
+   lista cerrada. `pl1 45` no escribe `"45"`, escribe `str(45 * 1_000_000)`.
+2. **Se valida ANTES de comprobar root.** Un valor absurdo se rechaza sin que
+   polkit llegue a molestar al usuario con el dialogo.
+3. **La lista de perfiles se lee del kernel**, no de una constante: si manana el
+   driver expone otros perfiles el helper sigue siendo correcto.
+4. **No se lee ni una variable de entorno.** pkexec limpia el entorno, pero eso
+   es una propiedad del lanzador, no del helper.
+5. **Interprete absoluto y aislado:** `#!/usr/bin/python3 -I`. No
+   `/usr/bin/env python3`, que resolveria el interprete por `$PATH`; y `-I`
+   (implica `-E -s -P`) ignora `PYTHONPATH`, `PYTHONHOME`, el `site-packages`
+   del usuario y el directorio del script como `sys.path[0]`.
+6. **`O_NOFOLLOW`, `O_NONBLOCK`, `O_TRUNC` y nunca `O_CREAT`.** El helper no
+   puede crear un fichero nuevo en ninguna circunstancia y no sigue un enlace
+   simbolico en el ultimo componente. Se abre una vez y se comprueba el
+   descriptor ya abierto con `fstat`, no la ruta: asi no hay ventana TOCTOU.
+
+### Que se ha intentado romper, y que paso
+
+Todo esto se ejecuta sin privilegio; el helper debe terminar con codigo 5 («no
+eres root») solo despues de haber aceptado el valor.
+
+| Ataque | Ejemplo | Resultado |
+|---|---|---|
+| Ruta como valor | `perfil ../../../etc/shadow` | codigo 2, «perfil invalido» |
+| Ruta absoluta | `pl1 /dev/sda` | codigo 2 |
+| Inyeccion de shell | `pl1 '45; rm -rf /'`, `` pl1 '`id`' `` | codigo 2. No hay shell en ningun punto: el helper no llama a `subprocess` ni a `os.system`, y la app lanza `pkexec` con una lista de argumentos, no con una cadena |
+| Salto de linea en el valor | `pl1 $'45\n\nrm -rf'` | codigo 2 |
+| Byte NUL | | imposible por construccion: `execve()` corta los argumentos en el primer NUL |
+| Numeros fuera de rango | `pl1 0`, `pl1 66`, `pl1 -45` | codigo 2 |
+| Otras bases | `pl1 0x2d`, `pl1 4.5e1`, `pl1 NaN` | codigo 2 |
+| Digitos que no son ASCII | `pl1 '٤٥'`, `pl1 '４５'` | codigo 2 |
+| Espacios, signo, guion bajo | `pl1 ' 45 '`, `pl1 '+45'`, `pl1 '4_5'` | codigo 2 |
+| Campos de mas o de menos | `rgb_efecto '3,5,80,1,255,0,0,0'` | codigo 2 |
+| Longitud | 63 y 64 caracteres se examinan; 65 se rechaza antes de mirarlos | codigo 2, «valor demasiado largo» |
+| Enlace simbolico en `/sys` | `ln -s /etc/shadow /sys/firmware/acpi/x` | `EPERM`. sysfs no deja crear entradas **ni a root** |
+| Secuencias ANSI en los errores | `rgb_zonas $'\e[31mXX,...'` | se imprimen con `repr()`, que las escapa |
+
+Sobre los digitos no ASCII: `int()` de Python es mucho mas permisivo de lo que
+parece. `int('٤٥')` vale 45 (digitos arabigo-indices), `int('４５')` vale 45
+(anchura completa), `int('4_5')` vale 45 e `int(' 45\n')` vale 45. Ninguno era
+explotable, porque el valor que se escribia se reconstruia a partir del entero;
+pero una interfaz privilegiada que acepta mas de lo que documenta es una
+interfaz que nadie puede auditar leyendo su documentacion. El helper usa un
+parser estricto: `[-]?[0-9]+` en ASCII y nada mas.
+
+**Los codigos de salida son un contrato**, no un detalle: la aplicacion y la
+extension deciden con ellos el mensaje que ve el usuario.
+
+| Codigo | Significado | Quien lo pone |
+|---|---|---|
+| `0` | escrito | el helper |
+| `1` | argumentos mal (numero, accion desconocida) | el helper |
+| `2` | valor rechazado por el validador | el helper |
+| `5` | no eres root (se ha validado igualmente) | el helper |
+| `126` | el usuario cerro el dialogo, o no autorizado | pkexec |
+| `127` | no se encontro el helper | pkexec |
+
+Cerrar el dialogo **no es un fallo**: ni la aplicacion ni la extension sacan
+aviso de error con el 126.
+
+### Por que auth_admin_keep y no otra cosa
+
+- `yes` (sin contrasena) es lo que usa `power-profiles-daemon` para
+  `switch-profile`. Ahi es defendible: es un metodo D-Bus que solo acepta tres
+  nombres de perfil y no puede escribir un limite de potencia arbitrario. Este
+  helper si puede. `yes` seria, en la practica, el modo udev.
+- `auth_admin` (contrasena en **cada** llamada) haria inusable el control del
+  PL1: una contrasena por cada paso del deslizador.
+- `auth_admin_keep` es lo que usan `systemd` (`manage-units`),
+  `gnome-remote-desktop` y `meson` para este mismo patron.
+- `allow_any` y `allow_inactive` van a `no`: nada de sesiones remotas ni de
+  usuarios que no esten fisicamente delante.
+
+Lo que **no** cubre: el dialogo es de grano grueso. Una accion polkit se
+resuelve por ejecutable, asi que hay una sola, y quien autoriza «cambiar el
+perfil» esta autorizando, mientras dure la cache, cualquiera de las diez
+acciones. Por eso el `<message>` de la politica enumera el alcance entero. Lo
+que se puede hacer con esa ventana esta acotado por la tabla de acciones:
+ruido, rendimiento y desgaste de bateria. Ninguna accion da una shell, escribe
+en un fichero arbitrario ni lee nada confidencial.
+
+### Sobre el rango del PL1 (10 a 65 W)
+
+El helper no acepta un PL1 fuera de 10 a 65 vatios, y ese rango vive **en dos
+sitios que tienen que coincidir**: `PL1_MIN_W` / `PL1_MAX_W` en
+`packaging/nitro-gekko-helper` y el `Adw.SpinRow.new_with_range(10, 65, 1)` de
+`src/gekkonitro/window.py`. Cambiar uno solo hace que la interfaz ofrezca un
+valor que el helper rechaza con codigo 2.
+
+**El maximo no puede danar la maquina.** Medido en este equipo (i7-13620H):
+
+```
+intel-rapl:0/constraint_1_power_limit_uw       = 115000000   # PL2, 115 W
+intel-rapl-mmio:0/constraint_0_power_limit_uw  =  70000000   # 70 W ahora mismo
+intel-rapl:0/constraint_0_max_power_uw         =  45000000   # base declarada
+```
+
+El firmware Acer ya sostiene 70 W por MMIO al cambiar de perfil (100 W en
+`performance`) y ya autoriza rafagas de 115 W por PL2. Un PL1 de 65 W queda
+**por debajo** de lo que la maquina hace sola. Ademas PL1 es un limite de
+*potencia*, no un desbloqueo de voltaje ni de frecuencia: no puentea el
+PROCHOT/TCC ni el control de ventiladores del EC.
+
+**Ojo con `constraint_0_max_power_uw`.** Vale 45 W aqui y es la potencia base
+que Intel declara para el chip, **no** un tope que el kernel imponga: la prueba
+es que el MMIO esta ahora mismo en 70 W, por encima de su propio «maximo». Se
+lee a titulo informativo pero no se usa como limite, porque si se usara el
+helper prohibiria justo los 65 W con los que la maquina arranca de fabrica.
+
+**El minimo es el que de verdad protege.** El abuso realista del PL1 no es
+subirlo, es **bajarlo**: dejarlo en 5 W hace la maquina inservible y el sintoma
+(«esto va lentisimo desde hace dias») no apunta a ninguna causa.
+
+### Modo udev, el opcional sin contrasena
+
+Este modo **no se instala si no lo pides**. Existe porque el dialogo de
+contrasena, aunque sea una vez cada varios minutos, molesta.
+
+`packaging/99-nitro-gekko.rules` (4 rutas) y `packaging/nitro-gekko.conf` (las
+otras 2) cambian **seis** ficheros de `0644 root:root` a `0664 root:wheel`.
+Nada mas.
+
+| Ruta | Que controla | Lo pone |
+|---|---|---|
+| `/sys/firmware/acpi/platform_profile` | perfil termico (interfaz legacy, la que notifica) | tmpfiles |
+| `/sys/class/platform-profile/platform-profile-0/profile` | el mismo perfil, interfaz nueva | udev + tmpfiles |
+| `intel-rapl:0/constraint_0_power_limit_uw` | PL1 por MSR | udev + tmpfiles |
+| `intel-rapl-mmio:0/constraint_0_power_limit_uw` | PL1 por MMIO | udev + tmpfiles |
+| `acer-wmi-battery/health_mode` | limite de carga de bateria | udev + tmpfiles |
+| `intel_pstate/no_turbo` | turbo de CPU | tmpfiles |
+
+No se abre **ninguna lectura nueva**: los seis ya eran legibles por todo el
+mundo. Lo unico que cambia es quien puede **escribir**. No se toca
+`constraint_1` (PL2), ni `constraint_2`, ni ningun `enabled`.
+
+**Las rutas del teclado y del EC NO estan aqui.** `four_zone_mode`,
+`per_zone_mode`, `backlight_timeout`, `usb_charging`, `battery_calibration` y
+`boot_animation_sound` siguen siendo `0644 root:root` incluso con `--con-udev`,
+asi que esas seis acciones **siguen pasando por pkexec** y siguen pidiendo
+contrasena. Es deliberado: `battery_calibration` arranca un ciclo completo de
+descarga y carga de la bateria.
+
+El argumento a favor de este modo es real pero parcial:
+
+> La PERSONA no gana ninguna capacidad nueva. Ya podia escribir esos seis
+> ficheros con `sudo tee`. Esto solo le ahorra teclear la contrasena.
+
+Y el argumento en contra es el que importa:
+
+> Los PROCESOS que corren como esa persona SI ganan capacidad nueva.
+
+Con las reglas puestas, cualquier cosa que se ejecute con tu uid —el navegador,
+una extension del navegador, un juego, un `npm install`, un script copiado de un
+foro— escribe en esos seis ficheros **en silencio, sin contrasena y sin dejar
+rastro evidente**. Y en este modo la aplicacion escribe directa en sysfs:
+**la validacion del helper desaparece**, incluido el rango 10..65 W.
+
+Riesgo concreto de cada ruta, para no exagerarlo ni minimizarlo:
+
+- **`platform_profile`.** Un proceso puede dejar el portatil en `performance`:
+  de ~1661 RPM en `quiet` a ~3237 RPM, el doble de ruido para ganar 1 °C. Y
+  escribiendo `balanced-performance` puede dejar a proposito el menu de energia
+  de GNOME en blanco.
+- **PL1 (MSR y MMIO).** Hacia arriba no hay dano posible. El abuso realista es
+  bajarlo: a 5 W la maquina queda inservible sin ningun aviso.
+- **`health_mode`.** Poner `0` desactiva en silencio el limite al 80 % que
+  tenias puesto para cuidar la bateria; no lo notas hasta meses despues.
+- **`no_turbo`.** Perdida de rendimiento sostenida y silenciosa. El menos grave.
+
+**Techo de riesgo:** ruido, rendimiento y desgaste de bateria. No hay escalada
+a root, no hay fuga de informacion, no hay persistencia. Es pequeno, pero no es
+cero, y es exactamente lo que el modo por defecto evita.
+
+### Por que no se abre energy_uj, en ningun modo
+
+`/sys/class/powercap/intel-rapl:0/energy_uj` esta en `0400 root` y **se queda
+como esta**. No aparece en las reglas, ni en el `tmpfiles.d`, ni en la lista
+blanca del helper, y no debe aparecer nunca.
+
+El motivo es **PLATYPUS (CVE-2020-8694)**. Los contadores de energia de RAPL
+tienen resolucion suficiente para que un proceso sin privilegios que los lea en
+bucle deduzca **que esta ejecutando el resto del sistema** correlacionando el
+consumo con el codigo: se demostro recuperar claves AES-NI y secretos de un
+enclave SGX asi. La respuesta del kernel fue quitar la lectura a los usuarios
+normales.
+
+Esa diferencia es la clave de todo este apartado:
+
+- Las seis rutas del modo udev son de **escritura molesta**: un atacante hace
+  ruido.
+- `energy_uj` es de **lectura confidencial**: un atacante se lleva secretos.
+
+Consecuencia practica y honesta: **Nitro Gekko no muestra vatios de CPU.** No es
+un olvido ni una funcion pendiente. No hay dato porque no se va a leer.
+
+### En que modo esta esta maquina
+
+Que hay instalado:
+
+```bash
+ls -l /usr/lib/nitro-gekko/nitro-gekko-helper \
+      /usr/share/polkit-1/actions/org.thegekko.nitrogekko.policy \
+      /usr/lib/udev/rules.d/99-nitro-gekko.rules \
+      /usr/lib/tmpfiles.d/nitro-gekko.conf 2>&1
+```
+
+Los dos primeros = modo polkit. Los dos ultimos = ademas, modo udev.
+
+Que permisos hay abiertos ahora mismo:
+
+```bash
+ls -l /sys/firmware/acpi/platform_profile \
+      /sys/class/platform-profile/platform-profile-0/profile \
+      /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw \
+      /sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw \
+      /sys/bus/wmi/drivers/acer-wmi-battery/health_mode \
+      /sys/devices/system/cpu/intel_pstate/no_turbo
+```
+
+Si sale `rw-r--r-- root root`, estas en modo polkit y no hay nada abierto. Si
+sale `rw-rw-r-- root wheel`, lo ha puesto el modo udev de Nitro Gekko.
+Cualquier otra cosa de `/sys` con permisos raros **no es de Nitro Gekko**.
+
+Para quitar solo el modo udev y quedarte con polkit basta con borrar
+`/usr/lib/udev/rules.d/99-nitro-gekko.rules` y
+`/usr/lib/tmpfiles.d/nitro-gekko.conf` y reiniciar: al arrancar, los permisos
+vuelven a ser los del kernel. `install.sh --uninstall` lo hace ademas **en
+caliente**, sin esperar al reinicio.
+
+### La alternativa que sigue sin estar: un demonio D-Bus
+
+Lo correcto de manual, por encima incluso del helper por pkexec, seria un
+demonio de sistema con **polkit por metodo**: `SetPerfil`, `SetPL1`,
+`SetHealthMode`, cada uno con su accion. Ganaria autorizacion por operacion y un
+unico sitio donde registrar quien pidio que. No ganaria nada de lo que ya
+tenemos: los ficheros de `/sys` ya son `0644 root:root` y la validacion ya corre
+como root. Y costaria duplicar el proyecto y anadir un **proceso privilegiado
+permanente**, que es superficie de ataque nueva y de la peor clase: siempre
+encendido, siempre escuchando. El helper existe solo durante los milisegundos
+que tarda en escribir en un fichero, y muere.
+
+Es un cambio de riesgo consciente, no un descuido. **Si esta maquina pasara a
+tener varios usuarios con permisos distintos, la accion polkit unica deja de
+valer y hay que trocearla.** El cambio esta acotado: todas las escrituras de
+la aplicacion pasan por un unico metodo: `_escribir()`, en
+`src/gekkonitro/sysfs.py`.
+
+---
+
+## La extension de GNOME Shell
+
+Un toggle en **Configuracion rapida** para cambiar el perfil termico sin abrir
+la aplicacion. Es el 90 % del uso diario.
+
+- **UUID:** `nitro-gekko@thegekko.dev`
+- **Destino:** GNOME Shell **50** (`shell-version: ["50"]`)
+- **Ficheros:** `extension/metadata.json`, `extension.js`, `stylesheet.css`
+
+Ensena el perfil activo como subtitulo con su icono, despliega **los perfiles
+leidos de sysfs** (nunca codificados: salen de
+`/sys/class/platform-profile/platform-profile-0/choices`), muestra las RPM de
+los dos ventiladores dentro del menu, marca `balanced-performance` con un aviso
+y trae un boton «Abrir Nitro Gekko» solo si la aplicacion esta instalada.
+
+### La escalera para cambiar de perfil
+
+Los cinco perfiles se pueden aplicar desde aqui. Se prueban por orden, de lo
+gratis a lo que pide contrasena, y **cada peldano se comprueba releyendo
+sysfs**: nada se da por bueno porque una llamada haya respondido «correcto».
+
+| # | Via | Contrasena | Cuando sirve |
+|---|---|---|---|
+| 1 | ya esta puesto | — | se pulsa el perfil activo |
+| 2 | D-Bus a `power-profiles-daemon` | **no** | `low-power`, `balanced`, `performance` |
+| 3 | escritura directa en sysfs | **no** | solo si se instalo con `--con-udev` |
+| 4 | `pkexec` + helper del sistema | **si, una vez** | `quiet` y `balanced-performance` en modo polkit |
+
+`power-profiles-daemon` expone la accion polkit
+`org.freedesktop.UPower.PowerProfiles.switch-profile` con **`implicit active:
+yes`**: la sesion activa cambia de perfil sin contrasena y PPD escribe el
+`platform_profile` por nosotros, como root. Pero PPD solo conoce tres perfiles,
+asi que `quiet` y `balanced-performance` bajan al peldano 4.
+
+Las normas de revision de extensions.gnome.org permiten ese peldano
+explicitamente: *«Spawning privileged subprocesses should be avoided at all
+costs. If absolutely necessary, the subprocess MUST be run with `pkexec` and
+MUST NOT be an executable or script that can be modified by a user process.»*
+El helper vive en `/usr/lib/nitro-gekko/nitro-gekko-helper`, es `root:root 0755`
+y lo pone el instalador del sistema; la extension no trae ningun ejecutable ni
+lo puede modificar, y si el helper no esta instalado lo dice y no intenta nada.
+
+**No bloquea el compositor.** Medido dentro de un `gnome-shell` 50.4 real:
+lanzar el proceso con `Gio.Subprocess` cuesta **7 ms**, y con un hijo corriendo
+3 segundos el shell sigue contestando por D-Bus en **11 a 18 ms**. Dos detalles
+que no se pueden quitar: se **cierra Configuracion rapida antes de lanzar
+`pkexec`** (el propio `polkitAgent.js` avisa de que el dialogo puede no llegar a
+abrirse si otro actor tiene el *grab*), y se lanza con
+**`--disable-internal-agent`**, porque sin esa bandera pkexec registraria un
+agente de **texto** esperando una contrasena por una entrada estandar que nadie
+va a rellenar.
+
+### Dos fallos ajenos que la extension tiene que sortear
+
+**1. `power-profiles-daemon` responde «correcto» sin hacer nada.** PPD guarda el
+perfil activo en una variable suya y, si le pides el que ya cree tener, sale sin
+tocar el hardware y responde bien. En este portatil pasa constantemente, porque
+`quiet` y `balanced-performance` se escriben por el peldano 4 y PPD se queda
+creyendo que sigue en el ultimo que el puso. Reproducido:
+
+```
+platform_profile   = balanced-performance
+PPD ActiveProfile  = balanced
+Set(ActiveProfile, "balanced")  -> rc=0
+platform_profile   = balanced-performance    <-- NO HA CAMBIADO NADA
+```
+
+Pulsar «Equilibrado» no hacia absolutamente nada, y sin un solo error. La salida
+es el *empujon*: si PPD ya cree estar en el perfil pedido, se le pasa antes por
+otro (elegido de la lista que el propio PPD publica) para que el siguiente `Set`
+sea un cambio de verdad.
+
+**2. Una lectura suelta de `platform_profile` puede mentir.** El *getter* hace
+una llamada WMI real y `linuwu_sense` no la excluye mutuamente con las demas.
+Medido con el equipo quieto en `balanced` y otro proceso leyendo
+`/sys/devices/platform/acer-wmi/nitro_sense/{usb_charging,backlight_timeout}`
+—exactamente lo que hace la ventana de Nitro Gekko mientras esta abierta—, sobre
+**400 lecturas** de `platform_profile`:
+
+```
+345 correctas
+ 31 fallidas       (EIO / «la operacion no esta soportada»)
+ 24 con OTRO VALOR («quiet» estando en «balanced»)
+```
+
+Un **13,75 %** de lecturas inservibles. Es un fallo del **driver**, no de la
+extension; se compensa, no se arregla. Toda lectura que decida algo pasa por
+`_leerPerfilFiable()`, que insiste hasta que **dos lecturas seguidas dicen lo
+mismo**, separadas 120 ms. Con la lectura confirmada, 25 de 25 correctas bajo
+esa misma carga.
+
+### Decisiones que no se pueden deshacer sin romper algo
+
+- **El temporizador solo vive con el menu abierto.** Las RPM se refrescan cada
+  2 s, pero unicamente entre `open-state-changed(true)` y `(false)`. Medido:
+  6 s con el menu cerrado, **0 lecturas y 0 temporizadores**. El subtitulo se
+  mantiene al dia con un `GFileMonitor` sobre el fichero de perfil, que si
+  funciona en sysfs.
+- **Todo es asincrono, ficheros y procesos.** Una sola llamada sincrona congela
+  el compositor entero.
+- **Las banderas de escritura tienen que ser `Gio.FileCreateFlags.NONE`.** Con
+  `REPLACE_DESTINATION`, GLib crea un temporal en el mismo directorio y lo
+  renombra encima; en sysfs el directorio no es escribible y la escritura falla.
+- **Ni un solo perfil codificado a fuego, tampoco el neutro.** El perfil neutro
+  y el rapido se eligen en tiempo de ejecucion de la lista de `choices`: el
+  neutro es `balanced` si esta, y si no el del medio; el rapido es el ultimo,
+  que es el mas potente porque `choices` viene ordenado de menos a mas.
+- **El ornamento tiene que quedarse el ultimo hijo de la fila.**
+  `PopupImageMenuItem` mueve la marca de seleccion detras de la etiqueta; todo
+  lo que se anada despues con `add_child()` va detras de la marca y la empuja al
+  centro. Las RPM de referencia y el triangulo de aviso se insertan con
+  `insert_child_above()`.
+- **Nada de `TABLA[id]` a pelo.** La tabla de presentacion se consulta con
+  `Object.hasOwn()` y el mapeo a PPD es un `Map`: con acceso directo a un objeto
+  literal, un perfil llamado `constructor` o `toString` devuelve el miembro
+  heredado de `Object.prototype` y la extension revienta.
+- **Ninguna senal se queda con una promesa suelta.** Las cinco que arrancan
+  trabajo asincrono pasan por un envoltorio que hace `.catch()`. Un rechazo sin
+  capturar sale en el journal como `Unhandled promise rejection` y encima deja
+  la interfaz mintiendo.
+- **`opacity` no existe en el CSS de St.** Lo que hay que atenuar se atenua
+  poniendo la propiedad del actor desde `extension.js`.
+- **Cuidado con `error instanceof Gio.IOErrorEnum`:** en GJS es cierto para
+  **cualquier** `GError` del dominio Gio, «Permiso denegado» incluido. Se
+  comprueba `error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)`.
+- **`QuickSettingsItem` crea el menu pero no lo destruye**, y su actor cuelga
+  del *overlay* del panel: hay que llamar a `this.menu.destroy()` a mano en
+  `disable()`. Comprobado desactivando la extension con el menu abierto y el
+  temporizador corriendo: no queda ni el temporizador, ni el `Cancellable` sin
+  cancelar, ni un `pkexec` en vuelo (se mata con `force_exit()`).
+
+### Si el toggle no aparece
+
+**Si el equipo no expone `/sys/firmware/acpi/platform_profile`, la extension no
+se dibuja.** No es un fallo ni un error silencioso: sin esa ruta no hay perfiles
+que ofrecer, asi que el indicador no se crea. Y **solo carga en GNOME Shell
+50**: `metadata.json` declara `"shell-version": ["50"]` y GNOME rechaza como
+*outdated* cualquier extension cuya version no este en esa lista, sin explicar
+gran cosa.
+
+Para ver que pasa:
+
+```bash
+gnome-extensions info nitro-gekko@thegekko.dev   # el campo State lo dice
+journalctl -f -o cat /usr/bin/gnome-shell
+```
+
+---
+
+## Como tratar este programa
+
+Todo lo anterior explica **como se usa**. Esto explica **como se toca**, y esta
+escrito para quien retome el proyecto: una persona, o un agente de IA al que le
+suelten el repositorio y una tarea.
+
+En la copia local de trabajo hay ademas un `AGENTS.md` con el contrato corto
+—como se trabaja, que se comprueba antes de dar algo por bueno, y una bitacora
+de hallazgos que se actualiza en cada sesion—. No se publica: si algo de ahi le
+sirve a quien clone el repositorio, tiene que acabar en este README.
+
+Leelo entero antes de editar un fichero. No es celo: este proyecto pone un
+modulo de kernel en la lista negra del otro, escribe en `/etc` y expone un
+programa que corre como root. Casi todo se arregla en dos ordenes, pero hay
+fallos que **no se ven hasta el siguiente arranque**, que es el peor momento
+para descubrirlos.
+
+### Lo primero: el alcance
+
+Esto se escribio, se midio y se probo en **un** portatil: Acer Nitro AN17-51
+(Spacia_RTH, BIOS V1.11), Arch Linux, kernel `linux-zen`, GNOME 50.4 sobre
+Wayland. Todo lo demas es hipotesis, y en este repositorio las hipotesis van
+declaradas como tales.
+
+Hay tres cosas que son **medidas de este equipo, no lecturas del tuyo**, y que
+por lo tanto pueden mentir en cualquier otra maquina:
+
+| Que | Donde vive | Si estas en otro equipo |
+|---|---|---|
+| RPM tipicas por perfil | `RPM_TIPICAS` en `src/gekkonitro/sysfs.py` | son de referencia; las RPM en vivo si son las tuyas |
+| Rango del PL1, 10 a 65 W | `PL1_MIN_W`/`PL1_MAX_W` en `packaging/nitro-gekko-helper` **y** el `SpinRow` de `src/gekkonitro/window.py` | el 65 es el valor de fabrica de este chip |
+| `KEY_PRESENTATION` del boton de la marca | `packaging/preparar-sistema.sh` | averigualo con `packaging/capturar-tecla.py` |
+
+De los siete modelos que reconoce la tabla DMI del driver, **solo el AN17-51
+esta probado**; los otros seis vienen del upstream. Eso esta dicho en
+[Si tu Acer es otro modelo](#si-tu-acer-es-otro-modelo) y no se quita.
+
+### El mapa
+
+```
+src/gekkonitro/     la aplicacion GTK4/libadwaita
+  sysfs.py          TODO el acceso a /sys y TODAS las escrituras. Python puro:
+                    no importa gi, GTK ni GLib, para poder probarlo sin sesion
+                    grafica.  Aqui esta _escribir(), la frontera de privilegio
+  window.py         la unica capa que toca widgets. Tres bucles de refresco
+  grafica.py        la grafica de RPM con cairo. Sin temporizador propio
+  ajustes.py        dos claves en ~/.config/nitro-gekko/ajustes.json
+  __main__.py       Adw.Application, ventana unica
+extension/          extension de GNOME Shell 50. Funciona sin la aplicacion
+packaging/          helper privilegiado, politica polkit, reglas udev y los
+                    cuatro instaladores
+rgb/                copia MODIFICADA de Linuwu-Sense + DKMS. Codigo ajeno
+data/               icono, .desktop
+nitro-gekko         lanzador de desarrollo: ejecuta el repositorio sin instalar
+```
+
+**Dos ficheros concentran casi todo el riesgo**, y conviene abrirlos antes que
+ningun otro:
+
+- `src/gekkonitro/sysfs.py`, metodo `_escribir()`: por ahi sale **toda**
+  escritura de la aplicacion. Si cambias como se escribe, se cambia aqui y en
+  ningun otro sitio.
+- `packaging/nitro-gekko-helper`, diccionario `ACCIONES`: la unica lista blanca
+  de rutas que corre como root.
+
+Y una frontera que no es evidente: **los nombres de accion son un contrato
+entre procesos**. La cadena que viaja por `pkexec` es literalmente `perfil`,
+`pl1`, `rgb_zonas`... y la usan a la vez `sysfs.py`, el helper y
+`extension.js`. Renombrar uno rompe las tres piezas a la vez, y falla en
+tiempo de ejecucion, no al compilar.
+
+### Las reglas que no se negocian
+
+Cada una de estas esta puesta por un fallo que ya paso, y casi todas tienen su
+parrafo de «por que» dentro del codigo.
+
+1. **El helper nunca recibe una ruta.** Ni entera, ni un trozo, ni un indice que
+   se concatene a una ruta. Solo un nombre de accion de la lista cerrada y un
+   valor. Anadir un argumento de ruta es reabrir un agujero de escalada a root
+   que ya estuvo abierto.
+2. **No se toca el shebang `#!/usr/bin/python3 -I`** ni se leen variables de
+   entorno en el helper. Con `env python3` y sin `-I`, un `PATH` o un
+   `PYTHONPATH` manipulados ejecutan codigo arbitrario **como root** (comprobado
+   con la version anterior).
+3. **No se «limpia» la funcion `escribir()` del helper.** `O_NOFOLLOW`,
+   `O_NONBLOCK`, `O_TRUNC`, la ausencia de `O_CREAT` y el `fstat` sobre el
+   descriptor ya abierto son cinco medidas con su fallo reproducido detras. Sin
+   `O_NONBLOCK`, un `os.open()` sobre una FIFO **cuelga para siempre** a un
+   proceso root con la autorizacion ya concedida.
+4. **El rango del PL1 se queda en 10 a 65 W, en los dos sitios a la vez.** Y
+   `constraint_0_max_power_uw` se lee como informacion, nunca como limite.
+5. **`--con-udev` no se pone por defecto ni se «simplifica» quitando el camino
+   pkexec.** En ese modo desaparece la validacion entera del helper.
+6. **`energy_uj` no se abre nunca**, y por eso no hay vatios de CPU. No es una
+   funcion pendiente.
+7. **El perfil se ESCRIBE siempre en `/sys/firmware/acpi/platform_profile`**, la
+   ruta legacy, aunque se lea de la de `/sys/class`. La legacy es la unica que
+   notifica, y es la que vigila `power-profiles-daemon`: escribir en la otra
+   funciona pero deja al resto del sistema desincronizado.
+8. **No se cablea ningun numero de `hwmon` ni el nombre del nodo de bateria.**
+   El hwmon se busca por nombre (`acer`) porque el numero cambia entre
+   arranques; la bateria se elige por contenido (`type=Battery` y
+   `scope != Device`), porque si no la aplicacion acaba ensenando la bateria de
+   un raton inalambrico (comprobado: `hidpp_battery_0`, 58 %).
+9. **No se mete `leer_teclado()` ni ninguna lectura de
+   `/sys/devices/platform/acer-wmi/*` en el bucle de 1 Hz.** Cuestan entre 5 y
+   53 ms de WMI real y ademas son las que hacen mentir a las lecturas de perfil
+   de la extension.
+10. **No se toca `rgb/src/linuwu_sense.c` sin conservar sus dos parches**
+    (el quirk del AN17-51 con `.four_zone_kb=1` y su entrada DMI, y los tres
+    `strncpy()` -> `memcpy()`). Traer el fuente del upstream tal cual es la
+    forma mas rapida de dejar el portatil sin ventiladores en el siguiente
+    arranque, porque `acer_wmi` esta en la lista negra.
+11. **No se cambia `shell-version` de `extension/metadata.json`** para «que
+    funcione en mi GNOME». Declara `["50"]` a proposito, que es donde esta
+    probada. Ampliar el array no hace que funcione: hace que cargue sin estar
+    probada.
+12. **En la politica polkit, `allow_active` sigue siendo `auth_admin_keep`**, y
+    en sus comentarios XML no puede haber dos guiones seguidos. Un XML mal
+    formado no da error visible: polkit lo descarta en silencio y pkexec cae en
+    `auth_admin` sin cache, o sea contrasena en cada pulsacion.
+13. **En `99-nitro-gekko.rules` no se usa `MODE=`, `GROUP=` ni `ATTR{}`** para
+    cambiar permisos, sino `RUN+="/usr/bin/chgrp ..."` con rutas absolutas: esos
+    dispositivos no tienen nodo en `/dev` y las otras claves serian
+    silenciosamente inutiles. Un `$` de shell dentro de un valor hace que udev
+    **rechace la regla entera**.
+14. **Las listas cerradas se leen de su fuente, no se inventan.** Los perfiles,
+    de `platform_profile_choices`; los ocho efectos RGB y sus rangos, del
+    `switch` de `four_zoned_rgb_kb_store()` en el driver; `usb_charging`, de
+    `0/10/20/30` y nada mas (el driver interpreta en silencio como 0 cualquier
+    otro valor, asi que relajar la validacion hace creer al usuario que ha
+    puesto un 15 % que en realidad lo desactiva).
+15. **`battery_calibration` no se expone en la interfaz.** El helper la acepta y
+    el driver la tiene, pero un ciclo de calibracion descarga y recarga la
+    bateria entera durante horas y no puede quedar a un clic.
+16. **Los avisos honestos no se quitan, y los avisos no se convierten en
+    abortos.** Cada script tiene decidido si se planta o si sigue, y la
+    asimetria es deliberada: `install.sh` avisa y sigue porque solo copia
+    ficheros; `preparar-sistema.sh` aborta si no eres Acer;
+    `instalar-rgb.sh` **se revierte solo** si el driver nuevo no repone los
+    perfiles y los tacometros, porque el siguiente arranque seria sin
+    ventiladores.
+17. **Todo lo que pueda pasar por pkexec es asincrono** y vuelve al hilo de la
+    interfaz con `GLib.idle_add`. En la extension, sin excepcion: una llamada
+    sincrona dentro de `gnome-shell` congela el compositor entero.
+18. **No se traduce nada al ingles** ni se «limpian» los comentarios largos.
+    Ver [El estilo, que hay que imitar](#el-estilo-que-hay-que-imitar).
+
+### El presupuesto de tiempo
+
+El reparto de lecturas de la aplicacion no es una preferencia: sale de medir con
+`time.perf_counter`, y la tabla completa esta en la cabecera de
+`src/gekkonitro/sysfs.py`.
+
+| Ciclo | Periodo | Coste | Que lee |
+|---|---|---|---|
+| `leer_rapido()` | 1 s | 0,6 ms | ventiladores, temperatura, PL1, bateria, frecuencia |
+| `leer_lento()` | 10 s | 10,0 ms | perfil (ACPI) y temperatura de bateria (WMI) |
+| `leer_gpu()` | 5 s, en un hilo | variable | `nvidia-smi`, que despierta la tarjeta |
+| `leer_teclado()` | **bajo demanda** | 47 a 53 ms | los cinco atributos del EC y del RGB |
+
+Lo contraintuitivo, y por eso esta medido: **leer el perfil es la lectura mas
+cara de todas** (5 a 7 ms; es una llamada ACPI real, no un fichero). Por eso no
+esta en el bucle de 1 Hz aunque parezca lo natural, y se relee al instante
+solo despues de que lo escribamos nosotros.
+
+### El flujo de trabajo
+
+**Lo instalado es una COPIA.** Editar el repositorio no cambia lo que corre.
+Esta es la primera hora perdida de todo el que retoma esto, porque se depura
+contra codigo viejo:
+
+| Lo que editas | Lo que corre | Como se actualiza |
+|---|---|---|
+| `src/gekkonitro/` | `/usr/lib/nitro-gekko/gekkonitro/` | `sudo ./packaging/install.sh`, o pruebalo antes con `./nitro-gekko` |
+| `extension/` | `~/.local/share/gnome-shell/extensions/nitro-gekko@thegekko.dev/` | copiar y **cerrar sesion** (en Wayland `Alt+F2 r` no vale) |
+| `packaging/nitro-gekko-helper` | `/usr/lib/nitro-gekko/nitro-gekko-helper` | `sudo ./packaging/install.sh` |
+| `rgb/src/linuwu_sense.c` | el modulo DKMS de `/usr/src` | `sudo ./packaging/instalar-rgb.sh` |
+
+**`install.sh` copia `src/` y `extension/` con `cp -a` y solo limpia
+`__pycache__`.** Todo lo demas que haya en esas carpetas se instala como codigo
+de sistema: un `.bak` del editor acaba en `/usr/lib/nitro-gekko/` y se queda
+ahi. Mira que hay antes de instalar.
+
+**No hay pruebas automaticas, ni CI, ni `pyproject.toml`, ni linters.** El
+estilo es una convencion, no una regla que compruebe una maquina. Lo que si hay
+son cuatro comprobaciones baratas, y son las que se pasan antes de dar nada por
+bueno:
+
+```bash
+bash -n packaging/install.sh packaging/preparar-sistema.sh \
+        packaging/instalar-rgb.sh packaging/probar-rgb.sh   # sintaxis, sin ejecutar
+python3 -m py_compile src/gekkonitro/*.py packaging/nitro-gekko-helper
+udevadm verify packaging/99-nitro-gekko.rules               # lo mismo que hace install.sh
+xmllint --noout --valid packaging/org.thegekko.nitrogekko.policy
+```
+
+Con el `xmllint`, ojo: **no basta con el codigo de salida**. `install.sh` exige
+que la salida sea **vacia**, porque un aviso de validacion no siempre cambia el
+codigo de retorno y un `.policy` invalido degrada la autenticacion en silencio.
+
+### Como probar sin quedarte sin ventiladores
+
+Por orden de seguridad. Los cuatro primeros no tocan nada:
+
+```bash
+./nitro-gekko                                    # la app desde el repositorio
+DESTDIR=/tmp/prueba ./packaging/install.sh       # arbol falso: ni root, ni /sys,
+find /tmp/prueba -type f | sort                  #   ni udev, ni caches
+./packaging/preparar-sistema.sh --revisar        # diagnostico del hardware
+./packaging/probar-rgb.sh --dry-run              # los 8 pasos, sin darlos
+```
+
+Para ensayar lo que diria en **otro** equipo sin tener otro equipo, los scripts
+aceptan variables de entorno pensadas justo para eso (solo con `--revisar`):
+
+```bash
+DIR_DMI=/ruta/falsa      ./packaging/preparar-sistema.sh --revisar  # otro modelo
+DIR_POWERCAP=/ruta/falsa ./packaging/preparar-sistema.sh --revisar  # sin RAPL de Intel
+```
+
+Los validadores del helper se prueban **sin privilegio y sin tocar nada**: el
+helper valida antes de comprobar que es root, asi que un valor bueno termina en
+codigo 5 («no eres root») y uno malo en codigo 2:
+
+```bash
+./packaging/nitro-gekko-helper pl1 45   ; echo $?   # 5  -> aceptado
+./packaging/nitro-gekko-helper pl1 66   ; echo $?   # 2  -> fuera de rango
+./packaging/nitro-gekko-helper perfil ../../etc/shadow ; echo $?   # 2
+```
+
+Y la capa de hardware entera se puede ejercitar desde una consola de texto,
+porque `sysfs.py` no importa GTK:
+
+```bash
+PYTHONPATH=src python3 -c 'from gekkonitro import sysfs; c=sysfs.ControlNitro(); \
+print(c.diagnostico(), c.leer_rapido(), c.leer_lento())'
+```
+
+**El unico ensayo que descarga drivers en caliente es `probar-rgb.sh`**, y esta
+pensado para ejecutarse **antes** de instalar nada: si ya tienes `linuwu_sense`
+cargado se planta a proposito. Restaura solo el driver de partida aunque falle a
+mitad o lo cortes con Ctrl+C. `instalar-rgb.sh`, en cambio, **no tiene ensayo en
+seco**: cualquier ejecucion que no sea `--help` compila e instala de verdad.
+
+> **En esta maquina de desarrollo dos de esas ordenes ya no valen**, y no es que
+> esten rotas: `probar-rgb.sh` se niega porque `linuwu_sense` ya esta instalado,
+> y `make -C rgb` aborta porque la ruta del repositorio tiene un espacio y
+> kbuild no los admite. Para compilar a mano:
+> `cp -a rgb /tmp/rgb && make -C /tmp/rgb`.
+
+### Si un arranque se queda sin perfiles ni ventiladores
+
+Es el unico dano practico que este proyecto puede causar, y viene siempre de lo
+mismo: `acer_wmi` esta en la lista negra y el modulo DKMS no ha compilado
+contra el kernel nuevo. Se reconoce y se arregla como esta escrito en [El
+riesgo real de este paso, dicho
+claro](#el-riesgo-real-de-este-paso-dicho-claro). Las mismas instrucciones van
+dentro de
+`/etc/modprobe.d/nitro-gekko-rgb.conf`, que es el fichero que uno acaba
+encontrando cuando busca por que se ha quedado sin ventiladores. **No las
+borres de ahi.**
+
+### Donde vive cada version
+
+Son cuatro sitios, y dos de ellos **tienen que coincidir literalmente**:
+
+| Fichero | Que declara |
+|---|---|
+| `src/gekkonitro/__init__.py` | `VERSION` de la aplicacion |
+| `extension/metadata.json` | `version-name` y `shell-version` |
+| `rgb/dkms.conf` | `PACKAGE_NAME` y `PACKAGE_VERSION` |
+| `packaging/instalar-rgb.sh` | `NOMBRE` y `VERSION`, que **deben** ser los mismos que los de `dkms.conf` |
+
+Si no coinciden, DKMS registra el modulo con otro nombre y ni siquiera
+`--revertir` sabe quitarlo.
+
+### El estilo, que hay que imitar
+
+El proyecto esta escrito entero en castellano: comentarios, docstrings,
+identificadores, banderas (`--revisar`, `--revertir`, `--ayuda`), mensajes de la
+interfaz y documentacion. El ingles solo entra donde lo impone una API ajena
+(`do_activate`, `enable`, `disable`), donde es un nombre del kernel
+(`platform_profile`, `four_zone_mode`, `health_mode`) o en la traduccion
+obligatoria de la politica polkit.
+
+**La ortografia tiene dos zonas, y son deliberadas:**
+
+| Zona | Como se escribe |
+|---|---|
+| `README.md`, `packaging/`, `src/`, `rgb/`, `data/`, `nitro-gekko` | castellano **sin tildes y sin enye**: «aplicacion», «termico», «asi», «pestanas», «contrasena», y el si afirmativo tambien sin tilde |
+| `extension/` (js, css, json y sus notas) | castellano **con todas las tildes y enyes** |
+
+No es un descuido que arreglar: son 7000 lineas coherentes. Antes de escribir
+una linea, mira en que zona estas. `packaging/nitro-gekko-helper` es ademas
+**ASCII puro**: ni comillas angulares, ni raya larga, ni grados.
+
+El resto de convenciones, tal como estan en el codigo:
+
+- **Cabeceras de seccion** con una linea de guiones: 76 columnas en Python
+  (`# ` + 74), 77 en Bash (`# ` + 75, y el titulo con dos espacios), 78 en
+  JavaScript (`// ` + 75). Las sub-cabeceras dentro de una funcion son de una
+  sola linea: `# -- grupo 3: potencia ------`. No es decoracion: es como se
+  navegan ficheros de 1000 a 1600 lineas.
+- **Prosa y comentarios cortados a mano en torno a 78 u 80 columnas.** Las
+  tablas y los bloques de codigo se dejan correr.
+- **Las constantes de modulo de Python se documentan con `#:`** antes de la
+  definicion, no con un `#` normal.
+- **Cifras con coma decimal y espacio antes de la unidad:** «41,9 W»,
+  «13,75 %», «66 °C», «~2200 rpm».
+- **Toda afirmacion tecnica va con su medida y con como se obtuvo.** «Es
+  rapido» no vale; el patron es «Medido en este equipo (i7-13620H): ...» o
+  «Comprobado dentro de gnome-shell 50.4: ...».
+- **Se separa siempre lo medido aqui de lo heredado, y se dice lo que NO esta
+  probado.**
+- **El enfasis en el codigo es con MAYUSCULAS** dentro de la frase (NO, NUNCA,
+  SOLO, SIEMPRE) y con el marcador `OJO:` para las trampas; en markdown, con
+  **negrita**. No hay ni un `TODO`, ni un `FIXME`, ni un `HACK`: lo que falta se
+  argumenta en prosa.
+- **Los comentarios explican el fallo anterior**, en pasado y con el sintoma
+  reproducido: «Antes...», «Una version anterior recibia...», «Reproducido:»,
+  «Comprobado con xprop». **Esos parrafos son la documentacion real del
+  proyecto**: borrar uno hace que el siguiente deshaga la correccion creyendo
+  que simplifica.
+- **Los mensajes al usuario dicen QUE falta, POR QUE y la ORDEN exacta que lo
+  arregla.** Nunca «no disponible» a secas.
+- **Sin emojis en ninguna parte**, y badges solo en el bloque HTML de cabecera
+  de este README.
+- **Los titulos de los `.md` van en minuscula tipo frase**, sin numerar y sin
+  signos de interrogacion aunque sean preguntas.
+- **En los mensajes de commit**, prefijo de conventional commits en el asunto y
+  cuerpo largo en castellano, dividido en apartados subrayados con guiones.
+
+Un detalle que despista: el codigo cita «gotcha 1», «gotcha 4», «gotcha 6» y
+«gotcha 7». Son los cuatro numeros de [Cosas raras de este portatil que
+conviene saber](#cosas-raras-de-este-portatil-que-conviene-saber), que es la
+lista a la que se refieren.
+
+### Que hay en el repositorio que no es nuestro
+
+- **`rgb/src/linuwu_sense.c`** son 4620 lineas ajenas con **dos** cambios
+  propios. Conserva su `SPDX-License-Identifier`, los avisos de copyright de sus
+  autores y el aviso de modificacion que exige la seccion 5(a) de la GPL. Eso no
+  es una cortesia: es la licencia.
+- **`rgb/Makefile.upstream`** esta ahi solo como referencia y **no se ejecuta
+  nunca**: su objetivo `install` pide un `linuwu_sense.service` que no existe en
+  este arbol. El que se usa es `rgb/Makefile`.
+- **`LICENSE`** es la GPL-3.0 completa. Ver
+  [Licencia y creditos](#licencia-y-creditos).
+
+### Que no se va a anadir, y por que
+
+No es una lista de tareas pendientes. Es una lista de cosas decididas:
+
+| | Por que no |
+|---|---|
+| Vatios de CPU en vivo | `energy_uj` esta cerrado por la mitigacion de PLATYPUS y no se va a abrir |
+| Calibracion de bateria en la interfaz | horas de descarga y recarga; no puede estar a un clic |
+| `--con-udev` por defecto | quita la validacion del helper y abre seis rutas a cualquier proceso del usuario |
+| Un demonio D-Bus con polkit por metodo | anadiria un proceso privilegiado permanente para ganar granularidad que hoy no hace falta |
+| Perfiles o efectos codificados a mano | se leen del kernel y del driver, que es lo que los hace correctos manana |
+
+### Sobre este README y los ficheros que no se publican
+
+Al repositorio publico sube **un solo documento: este**. Se quedan en la copia
+local las notas largas de trabajo (`packaging/SEGURIDAD.md` y
+`extension/README.md`), cuyo contenido imprescindible esta recogido arriba en
+[Seguridad y permisos](#seguridad-y-permisos) y en [La extension de GNOME
+Shell](#la-extension-de-gnome-shell), y el `AGENTS.md`, que es el contrato de
+trabajo y la bitacora de hallazgos.
+
+El `.gitignore` **tampoco se publica**, y eso tiene una consecuencia que
+conviene saber: quien clone el repositorio no recibe ninguna de esas reglas,
+asi que en su copia los `.md` locales, los `.ko` y los `__pycache__` vuelven a
+aparecer como ficheros sin seguimiento. Si vuelves a anadir un documento
+interno, comprueba que sigue fuera del indice:
+
+```bash
+git ls-files | grep '\.md$'      # tiene que decir solo: README.md
+git status --short               # y no debe aparecer ningun .md nuevo
+```
+
+Y si escribes algo aqui que remita a un fichero local, dilo con esa palabra
+—«en la copia local»— para que quien lo lea desde GitHub no busque un fichero
+que no le ha llegado.
 
 ---
 

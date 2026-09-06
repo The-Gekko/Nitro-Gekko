@@ -68,7 +68,7 @@ readonly FICHERO_POLICY="org.thegekko.nitrogekko.policy"
 # por pkexec y GNOME pide la contrasena.  Con --con-udev se instalan ademas las
 # reglas que abren esas rutas de /sys al grupo 'wheel', lo que evita el dialogo
 # a cambio de que CUALQUIER proceso del usuario pueda escribir ahi sin
-# autenticarse.  Ver packaging/SEGURIDAD.md.
+# autenticarse.  Ver la seccion 'Seguridad y permisos' del README.
 CON_UDEV=0
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,8 @@ comprobar_hardware() {
         aviso_contado "Este equipo no es un Acer (sys_vendor = '$vendor')."
         aviso_contado "Nitro Gekko esta hecho para un Acer Nitro AN17-51. Las rutas de"
         aviso_contado "sysfs que abre pueden no existir aqui, o significar otra cosa."
-        aviso_contado "Se continua igualmente, pero revisa packaging/SEGURIDAD.md antes."
+        aviso_contado "Se continua igualmente, pero lee antes 'Seguridad y permisos'"
+        aviso_contado "en el README."
     elif [[ "$producto" != *Nitro* && "$familia" != *Nitro* ]]; then
         aviso_contado "Es un Acer pero no parece un Nitro ('$producto' / '$familia')."
         aviso_contado "Probado unicamente en Nitro AN17-51. Se continua."
@@ -437,7 +438,7 @@ instalar() {
     # -- permisos (1): helper privilegiado + politica polkit -----------------
     # Este es el camino POR DEFECTO. El helper corre como root via pkexec y solo
     # acepta DIEZ acciones con nombre; la lista de rutas vive dentro de el, no
-    # se le pasa desde fuera.  Ver packaging/SEGURIDAD.md.
+    # se le pasa desde fuera.  Ver 'Seguridad y permisos' en el README.
     poner 755 "$RAIZ/packaging/$FICHERO_HELPER" "$DIR_APP/$FICHERO_HELPER" || true
     if [[ -f "$RAIZ/packaging/$FICHERO_POLICY" ]]; then
         # Una politica polkit mal formada se ignora EN SILENCIO: la accion
@@ -529,7 +530,7 @@ instalar() {
     if (( ! CON_UDEV )); then
         info "Modo polkit (por defecto): no se abren permisos de /sys."
         info "La aplicacion pedira la contrasena por el dialogo de GNOME."
-        info "Para el modo sin contrasena: $0 --con-udev  (lee SEGURIDAD.md antes)."
+        info "Para el modo sin contrasena: $0 --con-udev  (lee antes el README)."
     elif command -v udevadm >/dev/null && [[ -f "$RAIZ/packaging/$FICHERO_UDEV" ]]; then
         if udevadm verify "$RAIZ/packaging/$FICHERO_UDEV" >/dev/null 2>&1; then
             ok "reglas udev validadas con 'udevadm verify'"
@@ -986,9 +987,10 @@ $APP_NOMBRE - instalador de la aplicacion
 
   Esos dos ultimos son los que dan escritura al grupo 'wheel' sobre seis rutas
   de /sys, y por eso NO se instalan por defecto: sin ellos cualquier cambio
-  pasa por el helper y por el dialogo de contrasena de GNOME.  Lee
-  packaging/SEGURIDAD.md antes de usar --con-udev: explica exactamente que se
-  abre y que puede hacer con ello un proceso que corra como tu usuario.
+  pasa por el helper y por el dialogo de contrasena de GNOME.  Lee la seccion
+  'Seguridad y permisos' del README antes de usar --con-udev: explica
+  exactamente que se abre y que puede hacer con ello un proceso que corra
+  como tu usuario.
 
   Codigos de salida:
     0  todo instalado (puede haber avisos informativos)

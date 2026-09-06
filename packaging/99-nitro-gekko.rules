@@ -14,7 +14,8 @@
 #  atributos de sysfs (los otros 2 de la lista los pone packaging/
 #  nitro-gekko.conf, el tmpfiles.d; en total SEIS). A cambio de no pedir
 #  contrasena, cualquier proceso que corra con tu uid puede escribir ahi en
-#  silencio. Lee packaging/SEGURIDAD.md, parte 2, ANTES de instalarlo.
+#  silencio. Lee 'Modo udev' en la seccion 'Seguridad y permisos' del README
+#  ANTES de instalarlo.
 #
 #  Las rutas del teclado RGB y del EC (four_zone_mode, per_zone_mode,
 #  backlight_timeout, usb_charging, battery_calibration, boot_animation_sound)

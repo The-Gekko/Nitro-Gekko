@@ -61,7 +61,7 @@
   tres nombres de perfil y no puede escribir un limite de potencia
   arbitrario. Este helper si puede. Poner "yes" aqui equivaldria al modo
   udev, en el que cualquier proceso del usuario baja el PL1 a 10 W en
-  silencio. Ver packaging/SEGURIDAD.md.
+  silencio. Ver 'Seguridad y permisos' en el README.
 
   "auth_admin" (contrasena en CADA llamada) haria inusable el control del
   PL1: una contrasena por cada paso del deslizador.
