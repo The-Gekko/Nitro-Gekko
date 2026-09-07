@@ -58,10 +58,16 @@ readonly DIR_ICONOS="${PREFIX}/share/icons/hicolor"
 readonly DIR_ESQUEMAS="${PREFIX}/share/glib-2.0/schemas"
 
 readonly DIR_POLKIT="${PREFIX}/share/polkit-1/actions"
+readonly DIR_SYSTEMD="${PREFIX}/lib/systemd/system"
+#: Donde el helper anota lo que aplica, para reponerlo en el siguiente
+#: arranque.  Va en /var y no en $PREFIX porque son datos, no programa.
+readonly DIR_ESTADO="/var/lib/${APP_BIN}"
 
 readonly FICHERO_UDEV="99-nitro-gekko.rules"
 readonly FICHERO_TMPFILES="nitro-gekko.conf"
 readonly FICHERO_HELPER="nitro-gekko-helper"
+readonly FICHERO_RESTAURAR="nitro-gekko-restaurar"
+readonly FICHERO_UNIDAD="nitro-gekko-restaurar.service"
 readonly FICHERO_POLICY="org.thegekko.nitrogekko.policy"
 
 # Modo de privilegios.  Por DEFECTO solo polkit: la aplicacion llama al helper
@@ -462,6 +468,25 @@ instalar() {
     # acepta TRECE acciones con nombre; la lista de rutas vive dentro de el, no
     # se le pasa desde fuera.  Ver 'Seguridad y permisos' en el README.
     poner 755 "$RAIZ/packaging/$FICHERO_HELPER" "$DIR_APP/$FICHERO_HELPER" || true
+
+    # -- persistencia entre arranques ----------------------------------------
+    # El helper anota en $DIR_ESTADO cada valor que aplica; esta unidad lo
+    # repone al arrancar.  Hace falta porque el driver solo guarda su estado
+    # cuando se DESCARGA el modulo, y al apagar el equipo eso no pasa: lo que
+    # repondria es lo que hubiera la ultima vez que alguien hizo un rmmod.
+    if [[ -f "$RAIZ/packaging/$FICHERO_RESTAURAR" ]]; then
+        poner 755 "$RAIZ/packaging/$FICHERO_RESTAURAR" "$DIR_APP/$FICHERO_RESTAURAR" || true
+        poner 644 "$RAIZ/packaging/$FICHERO_UNIDAD" "$DIR_SYSTEMD/$FICHERO_UNIDAD" || true
+        # El directorio de estado lo crea aqui el instalador y no el helper en
+        # caliente: asi es root:root 0755 desde el primer momento y nadie puede
+        # adelantarse a crearlo con otros permisos.
+        if install -d -m 755 -o root -g root "${DESTDIR}${DIR_ESTADO}" 2>/dev/null \
+           || install -d -m 755 "${DESTDIR}${DIR_ESTADO}" 2>/dev/null; then
+            ok "${DIR_ESTADO}/  (estado para reponer tras reiniciar)"
+        else
+            aviso_contado "NO se pudo crear ${DIR_ESTADO}/: no se repondran los ajustes."
+        fi
+    fi
     if [[ -f "$RAIZ/packaging/$FICHERO_POLICY" ]]; then
         # Una politica polkit mal formada se ignora EN SILENCIO: la accion
         # org.thegekko.nitrogekko.aplicar no existiria y pkexec caeria en
@@ -742,6 +767,20 @@ recargar() {
         return 0
     fi
 
+    # -- unidad que repone los ajustes tras reiniciar ------------------------
+    if [[ -f "${DIR_SYSTEMD}/${FICHERO_UNIDAD}" ]] && command -v systemctl >/dev/null; then
+        systemctl daemon-reload 2>/dev/null || true
+        # 'enable' a secas, sin --now: al instalar no hay nada que reponer
+        # todavia, y arrancarla aqui solo serviria para escribir en el journal
+        # que el fichero de estado no existe.
+        if systemctl enable "${FICHERO_UNIDAD}" >/dev/null 2>&1; then
+            ok "${FICHERO_UNIDAD} activada (repone tus ajustes al arrancar)"
+        else
+            aviso_contado "NO se pudo activar ${FICHERO_UNIDAD}: los ajustes no se repondran."
+            aviso_contado "    sudo systemctl enable ${FICHERO_UNIDAD}"
+        fi
+    fi
+
     if (( ! CON_UDEV )); then
         # En modo polkit no se instala ninguna regla ni tmpfiles, asi que no
         # hay nada que recargar: intentarlo solo produce un error confuso
@@ -824,9 +863,19 @@ desinstalar() {
     # no existia -- mientras el script decia "Desinstalado por completo".
     # El helper no hace falta nombrarlo: vive dentro de $DIR_APP, que se borra
     # entero mas abajo.
+    # La unidad se para y se desactiva ANTES de borrar el fichero, o systemd
+    # se queda con un enlace roto en /etc/systemd/system/multi-user.target.wants
+    # y lo dice en cada arranque.
+    if [[ -z "$DESTDIR" ]] && command -v systemctl >/dev/null; then
+        if systemctl list-unit-files "$FICHERO_UNIDAD" >/dev/null 2>&1; then
+            systemctl disable --now "$FICHERO_UNIDAD" >/dev/null 2>&1 || true
+        fi
+    fi
+
     local objetivo
     for objetivo in \
         "$DIR_POLKIT/$FICHERO_POLICY" \
+        "$DIR_SYSTEMD/$FICHERO_UNIDAD" \
         "$DIR_UDEV/$FICHERO_UDEV" \
         "$DIR_TMPFILES/$FICHERO_TMPFILES" \
         "$DIR_BIN/$APP_BIN" \
@@ -850,6 +899,17 @@ desinstalar() {
             ok "borrado ${DIR_APP}/"
         else
             aviso_contado "NO se ha podido borrar ${DIR_APP}/"
+        fi
+    fi
+
+    # El estado guardado se va con la desinstalacion: dejarlo seria guardar
+    # ajustes de un programa que ya no esta, y ademas confundiria a quien
+    # reinstale mas adelante reponiendole algo de hace meses.
+    if [[ -d "${DESTDIR}${DIR_ESTADO}" ]]; then
+        if rm -rf "${DESTDIR}${DIR_ESTADO:?}" 2>/dev/null; then
+            ok "borrado ${DIR_ESTADO}/"
+        else
+            aviso_contado "NO se ha podido borrar ${DIR_ESTADO}/"
         fi
     fi
 

@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# Repone en el arranque lo ultimo que el usuario dejo puesto en Nitro Gekko.
+#
+# QUE PROBLEMA RESUELVE
+#
+# El driver linuwu_sense ya guarda y repone el teclado RGB y la pareja
+# perfil+ventiladores... pero solo escribe su fichero de estado cuando se
+# DESCARGA el modulo, y al apagar el equipo los modulos no se descargan.  O sea
+# que lo que repone es lo que hubiera la ultima vez que alguien hizo un rmmod,
+# que puede ser de hace semanas.  Y el resto de los ajustes (PL1, turbo, limite
+# de carga, overdrive, carga USB, sonido de arranque) no los guarda nadie.
+#
+# COMO FUNCIONA
+#
+# nitro-gekko-helper anota en /var/lib/nitro-gekko/estado cada valor que aplica,
+# ya validado y ya autorizado por polkit.  Este script lee ese fichero y vuelve
+# a pasar cada linea por el MISMO helper, que la valida otra vez antes de
+# escribirla.  No hay ninguna ruta ni ningun valor que venga de otro sitio.
+#
+# EL ORDEN NO ES ARBITRARIO
+#
+#   1. perfil        primero, porque cambiar de perfil devuelve los
+#                    ventiladores al automatico (en 'quiet' y 'low-power' lo
+#                    hace el propio driver) y hace que el firmware reescriba el
+#                    PL1 por MMIO.  Si se aplicara despues, se llevaria por
+#                    delante los dos siguientes.
+#   2. ventiladores  despues del perfil, para que el perfil no lo deshaga.
+#   3. pl1           despues del perfil, por lo mismo.
+#   4. el resto      en cualquier orden: son ajustes del EC y no se pisan.
+#
+# Este script NO falla nunca el arranque: si algo no se puede reponer lo dice en
+# el journal y sigue.  Para verlo:  journalctl -u nitro-gekko-restaurar
+#
+set -uo pipefail
+
+HELPER="${HELPER:-/usr/lib/nitro-gekko/nitro-gekko-helper}"
+ESTADO="${ESTADO:-/var/lib/nitro-gekko/estado}"
+#: Cuanto se espera a que el driver publique sus rutas. En un arranque frio el
+#: modulo puede tardar en registrar el dispositivo de plataforma.
+ESPERA_MAX="${ESPERA_MAX:-30}"
+DRY=0
+
+case "${1:-}" in
+    --revisar|-n|--dry-run) DRY=1 ;;
+    -h|--help|--ayuda)
+        awk '/^# /{sub(/^# ?/,""); print} /^set -/{exit}' "$0"
+        exit 0 ;;
+    "") ;;
+    *) echo "Opcion desconocida: $1  (prueba $0 --help)" >&2; exit 2 ;;
+esac
+
+registro() { echo "nitro-gekko-restaurar: $*"; }
+
+if [[ ! -r "$ESTADO" ]]; then
+    registro "no hay nada que reponer ($ESTADO no existe todavia)"
+    exit 0
+fi
+
+if [[ ! -x "$HELPER" ]]; then
+    registro "AVISO: no esta $HELPER; no se repone nada"
+    exit 0
+fi
+
+# --------------------------------------------------------------------------
+#  Esperar al driver.  systemd nos arranca cuando toca, pero el modulo puede
+#  no haber terminado de registrar /sys/devices/platform/acer-wmi.
+# --------------------------------------------------------------------------
+if (( ! DRY )); then
+    esperados=0
+    while (( esperados < ESPERA_MAX )); do
+        [[ -e /sys/firmware/acpi/platform_profile ]] && break
+        sleep 1
+        esperados=$(( esperados + 1 ))
+    done
+    if (( esperados > 0 )); then
+        registro "el perfil de plataforma tardo ${esperados}s en aparecer"
+    fi
+    if [[ ! -e /sys/firmware/acpi/platform_profile ]]; then
+        registro "AVISO: no hay platform_profile despues de ${ESPERA_MAX}s."
+        registro "AVISO: comprueba el driver:  dkms status linuwu-sense"
+    fi
+fi
+
+# --------------------------------------------------------------------------
+#  Reponer, en el orden que importa
+# --------------------------------------------------------------------------
+declare -A ACCION VALOR
+while IFS=$'\t' read -r ranura accion valor; do
+    [[ -n "${ranura:-}" && -n "${accion:-}" ]] || continue
+    ACCION["$ranura"]="$accion"
+    VALOR["$ranura"]="$valor"
+done < "$ESTADO"
+
+ORDEN=(perfil ventiladores pl1 bateria turbo overdrive teclado retro_timeout usb_carga sonido_arranque)
+
+hechos=0; fallos=0
+for ranura in "${ORDEN[@]}"; do
+    accion="${ACCION[$ranura]:-}"
+    [[ -n "$accion" ]] || continue
+    valor="${VALOR[$ranura]:-}"
+    if (( DRY )); then
+        registro "haria:  $HELPER $accion $valor"
+        continue
+    fi
+    if salida="$("$HELPER" "$accion" "$valor" 2>&1)"; then
+        registro "repuesto  $accion = $valor"
+        hechos=$(( hechos + 1 ))
+    else
+        codigo=$?
+        # Codigo 3 = la ruta no existe en este equipo (por ejemplo el RGB sin
+        # linuwu_sense).  Eso no es un fallo: es que esa parte no esta.
+        if (( codigo == 3 )); then
+            registro "omitido   $accion (no existe en este equipo)"
+        else
+            registro "AVISO: no se pudo reponer $accion = $valor (codigo $codigo): $salida"
+            fallos=$(( fallos + 1 ))
+        fi
+    fi
+done
+
+if (( DRY )); then
+    exit 0
+fi
+registro "terminado: $hechos repuesto(s), $fallos fallo(s)"
+exit 0

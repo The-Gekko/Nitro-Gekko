@@ -1,0 +1,20 @@
+[Unit]
+Description=Reponer los ajustes de Nitro Gekko (perfil, PL1, ventiladores, teclado RGB)
+Documentation=https://github.com/The-Gekko/Nitro-Gekko
+# Despues de que el modulo este cargado y de que rapl-pl1.service haya puesto
+# el PL1 base: el valor que el usuario eligio tiene que ser el ultimo en
+# escribirse, o el servicio de base se lo llevaria por delante.
+After=multi-user.target systemd-modules-load.service rapl-pl1.service
+Wants=systemd-modules-load.service
+ConditionPathExists=/var/lib/nitro-gekko/estado
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/nitro-gekko/nitro-gekko-restaurar
+# Nunca debe hacer fallar el arranque: si algo no se puede reponer, lo dice en
+# el journal y sale con 0.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

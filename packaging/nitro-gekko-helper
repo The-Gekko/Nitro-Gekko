@@ -535,6 +535,81 @@ def aplicar_ruta_binaria(ruta: Path):
     return aplicar
 
 
+# --------------------------------------------------------------------------
+# Registro de lo aplicado, para poder reponerlo en el siguiente arranque.
+#
+# POR QUE LO ESCRIBE EL HELPER Y NO LA APLICACION
+#
+# Porque el helper es el unico que ya corre como root y el unico que ya ha
+# validado el valor. Si el fichero lo escribiera la aplicacion (uid del
+# usuario), cualquier proceso de ese usuario podria dejar ahi lo que quisiera y
+# el servicio de arranque lo aplicaria como root sin que nadie hubiera
+# autorizado nada: seria la misma escalada que se cerro quitandole las rutas al
+# helper. Asi, en el fichero solo puede acabar algo que ya paso por el dialogo
+# de polkit y por el validador.
+#
+# Ademas el que repone en el arranque vuelve a pasar cada linea por ESTE mismo
+# programa, o sea que se valida dos veces: al aplicarla y al reponerla.
+#
+# LA CALIBRACION NO SE REGISTRA NUNCA. Reponer un ciclo de calibracion en cada
+# arranque descargaria y recargaria la bateria entera, durante horas, sin que
+# nadie lo hubiera pedido esta vez.
+DIR_ESTADO = Path("/var/lib/nitro-gekko")
+FICHERO_ESTADO = DIR_ESTADO / "estado"
+
+#: accion -> ranura. Dos acciones distintas que gobiernan LO MISMO comparten
+#: ranura, para que la ultima gane en vez de acumularse: el teclado se puede
+#: poner por efecto o por zonas, y el limite de carga por el modulo del AUR o
+#: por el EC.
+RANURAS = {
+    "perfil": "perfil",
+    "pl1": "pl1",
+    "bateria": "bateria",
+    "bateria_ec": "bateria",
+    "turbo": "turbo",
+    "ventiladores": "ventiladores",
+    "overdrive": "overdrive",
+    "rgb_efecto": "teclado",
+    "rgb_zonas": "teclado",
+    "retro_timeout": "retro_timeout",
+    "usb_carga": "usb_carga",
+    "sonido_arranque": "sonido_arranque",
+    # "calibracion" NO esta, y no debe estarlo.
+}
+
+
+def registrar(accion: str, valor: str) -> None:
+    """Anota lo aplicado en FICHERO_ESTADO. No falla nunca hacia fuera.
+
+    La escritura ya se ha hecho cuando se llama aqui: si el registro falla, el
+    cambio del usuario sigue siendo valido y lo unico que se pierde es que se
+    reponga en el proximo arranque. Por eso se traga cualquier error, pero se
+    dice por stderr para que no sea un fallo mudo.
+    """
+    ranura = RANURAS.get(accion)
+    if ranura is None:
+        return
+    try:
+        DIR_ESTADO.mkdir(mode=0o755, parents=True, exist_ok=True)
+        lineas = {}
+        if FICHERO_ESTADO.is_file():
+            for linea in FICHERO_ESTADO.read_text(encoding="ascii").splitlines():
+                partes = linea.split("\t")
+                if len(partes) == 3:
+                    lineas[partes[0]] = partes
+        lineas[ranura] = [ranura, accion, valor]
+        # Reemplazo atomico: si se corta la luz a mitad, o esta el fichero
+        # entero de antes o el entero de ahora, nunca uno a medias.
+        temporal = FICHERO_ESTADO.with_suffix(".nuevo")
+        temporal.write_text(
+            "".join("\t".join(p) + "\n" for p in lineas.values()), encoding="ascii"
+        )
+        os.chmod(temporal, 0o644)
+        os.replace(temporal, FICHERO_ESTADO)
+    except OSError as err:
+        print(f"aviso: no se pudo registrar el estado: {err}", file=sys.stderr)
+
+
 #: accion -> (validador, aplicador). El validador devuelve el valor ya
 #: normalizado que recibira el aplicador.
 ACCIONES = {
@@ -587,6 +662,7 @@ def main(argv: list[str]) -> None:
         )
 
     aplicar(normalizado)
+    registrar(accion, normalizado)
 
 
 if __name__ == "__main__":

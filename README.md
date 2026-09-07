@@ -496,6 +496,9 @@ quedar desfasada.
 
 ```
 /usr/lib/nitro-gekko/nitro-gekko-helper           ayudante privilegiado
+/usr/lib/nitro-gekko/nitro-gekko-restaurar        repone tus ajustes al arrancar
+/usr/lib/systemd/system/…restaurar.service        y su unidad
+/var/lib/nitro-gekko/estado                       lo ultimo que aplicaste
 /usr/share/polkit-1/actions/…policy               politica de autorizacion
 /usr/lib/nitro-gekko/gekkonitro/                  la aplicacion
 /usr/bin/nitro-gekko                              lanzador
@@ -719,6 +722,82 @@ modulo DKMS se quedaria con su copia desfasada para siempre.
 necesario para el limite de carga a ser **recomendado**. Sin el, el limite
 sigue funcionando por el EC; lo que se pierde es **la temperatura de la
 bateria**, que la publica ese modulo y no el EC.
+
+## Que se queda puesto al reiniciar
+
+Todo lo que toques en Nitro Gekko se repone en el siguiente arranque tal como lo
+dejaste: perfil termico, PL1, turbo, velocidad de los ventiladores, limite de
+carga, overdrive del panel, teclado RGB, carga USB y sonido de arranque.
+
+### Por que hacia falta
+
+El driver `linuwu_sense` ya guarda y repone dos cosas —el teclado RGB
+(`/etc/four_zone_kb_state`) y la pareja perfil + ventiladores
+(`/etc/predator_state`)—, pero **solo escribe esos ficheros cuando se DESCARGA
+el modulo**, y al apagar el equipo los modulos no se descargan. Lo que repone,
+entonces, es lo que hubiera la ultima vez que alguien hizo un `rmmod`, que puede
+ser de hace semanas. Y del resto de los ajustes no se encarga nadie.
+
+### Como funciona
+
+```
+   tu cambias algo en la aplicacion
+              |
+              v
+   pkexec -> nitro-gekko-helper  (valida, escribe en /sys, y ANOTA)
+              |
+              v
+   /var/lib/nitro-gekko/estado    root:root 0644
+              |
+              |   (siguiente arranque)
+              v
+   nitro-gekko-restaurar.service -> nitro-gekko-helper (valida OTRA VEZ)
+```
+
+**Lo anota el helper, no la aplicacion**, y eso no es un detalle: el helper es
+el unico que ya corre como root y el unico que ya ha validado el valor. Si el
+fichero lo escribiera la aplicacion, cualquier proceso con tu uid podria dejar
+ahi lo que quisiera y el servicio lo aplicaria como root en el arranque sin que
+nadie hubiera autorizado nada. Asi, en ese fichero solo puede acabar algo que ya
+paso por el dialogo de polkit; y al reponerlo se vuelve a validar.
+
+**El orden en que se repone no es arbitrario:** primero el perfil, despues los
+ventiladores y el PL1, y luego el resto. Cambiar de perfil devuelve los
+ventiladores al automatico y hace que el firmware reescriba el PL1 por MMIO, asi
+que si el perfil fuera el ultimo se llevaria por delante a los otros dos.
+
+**La calibracion de bateria no se anota nunca.** Reponer un ciclo de calibracion
+en cada arranque descargaria y recargaria la bateria entera durante horas sin
+que nadie lo hubiera pedido esa vez.
+
+### Lo que conviene saber
+
+> **Si dejas los ventiladores en manual, arrancaras en manual.** Es justo lo que
+> se pide de una funcion que recuerda lo ultimo, pero conviene decirlo: el
+> equipo se quedara con ese porcentaje fijo en cada arranque hasta que lo
+> cambies. Se vuelve al automatico desde la propia aplicacion, o poniendo el
+> perfil en Silencioso o Bajo consumo.
+
+Para ver que ha repuesto, y que no ha podido:
+
+```bash
+systemctl status nitro-gekko-restaurar.service
+journalctl -u nitro-gekko-restaurar
+cat /var/lib/nitro-gekko/estado          # una linea por ajuste
+```
+
+Para ver que HARIA sin hacerlo, y para desactivarlo del todo:
+
+```bash
+sudo /usr/lib/nitro-gekko/nitro-gekko-restaurar --revisar
+sudo systemctl disable nitro-gekko-restaurar.service   # deja de reponer
+sudo rm /var/lib/nitro-gekko/estado                    # y olvida lo guardado
+```
+
+Los ajustes del EC (carga USB, apagado del teclado, sonido de arranque, limite
+de carga) es probable que tu firmware ya los recuerde por su cuenta; volver a
+escribirlos no cuesta nada y asegura que el estado sea el que tu dejaste, no el
+que el EC crea recordar.
 
 ## Teclado RGB de 4 zonas
 
