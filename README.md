@@ -631,23 +631,50 @@ ciento.
 | `100,100` | los dos al maximo |
 | `n,m` | velocidad fija en cada uno |
 
-La aplicacion **no deja poner menos de un 20 %** y no acepta un `0` suelto. Ese
-20 no es una medida, es una eleccion prudente, y esta dicho asi tanto aqui como
-en el comentario del helper. Para convertirlo en una medida hay un script que
-barre el porcentaje de arriba abajo anotando las RPM de cada escalon, y que
-**devuelve los ventiladores al automatico pase lo que pase**, incluido un
-Ctrl+C a mitad:
+La aplicacion **no deja poner menos de un 30 %** y no acepta un `0` suelto. Los
+dos limites vienen de medir, no de suponer.
+
+### El suelo esta medido, y no estaba donde parecia
+
+Barrido de 100 a 1 con `packaging/medir-ventiladores.sh`, 10 s por escalon, con
+el equipo en reposo y en `balanced`:
+
+| % pedido | CPU rpm | GPU rpm | | % pedido | CPU rpm | GPU rpm |
+|---|---|---|---|---|---|---|
+| 100 | 6614 | 6614 | | 30 | 2691 | 2623 |
+| 80 | 5659 | 5644 | | 20 | 2591 | 2530 |
+| 60 | 4597 | 4568 | | 10 | 2594 | 2530 |
+| 40 | 3417 | 3343 | | 1 | 2591 | 2539 |
+
+**De 20 % para abajo las RPM no bajan.** El EC impone su propio suelo en torno a
+2590 rpm y se queda ahi por mucho que se le pida menos. Eso desmonta dos cosas:
+
+1. **El ventilador no se para nunca**, asi que el peligro del que este minimo
+   pretendia proteger no existe.
+2. **Todo el tramo por debajo de ~25 % hace exactamente lo mismo.** Ofrecerlo
+   seria poner veinte valores distintos que dan un solo resultado, que es el
+   mismo problema que ya tiene documentado `usb_charging`.
+
+Por eso el minimo es **30 %**: es el escalon mas bajo que todavia se distingue
+del suelo (2691 frente a 2591).
+
+> **Y esto es lo que mas conviene saber antes de tocarlo:** con el equipo en
+> reposo y en `balanced`, el **automatico** estaba en **1649 / 1665 rpm**. El
+> suelo del modo manual son ~2590. O sea que **el control manual no puede dejar
+> el portatil mas silencioso que el automatico**, solo mas ruidoso. Sirve para
+> forzar refrigeracion, no para buscar silencio.
+
+Lo del `0` suelto es otra cosa: para el driver significa «ese ventilador en
+automatico y el otro fijo», y el mismo digito no puede querer decir dos cosas en
+una interfaz privilegiada. O los dos, o ninguno.
+
+Para repetir la medida en otro equipo, el script **devuelve los ventiladores al
+automatico pase lo que pase**, incluido un Ctrl+C a mitad:
 
 ```bash
 ./packaging/medir-ventiladores.sh --revisar   # dice que haria, sin tocar nada
-sudo ./packaging/medir-ventiladores.sh        # ~3 min, hazlo con el equipo en reposo
+sudo ./packaging/medir-ventiladores.sh        # ~3 min, con el equipo en reposo
 ```
-
-El motivo del minimo es otro: por debajo de cierto punto el ventilador
-puede quedarse parado, y el sintoma —un portatil que se calienta y se limita
-solo— no apunta a ninguna causa. Un `0` en un solo campo significa para el driver
-«ese ventilador en automatico y el otro fijo», y el mismo digito no puede
-querer decir dos cosas en una interfaz privilegiada: o los dos, o ninguno.
 
 **Tres cosas que la interfaz dice y conviene repetir:**
 
@@ -994,7 +1021,7 @@ del propio fichero del helper.
 | `bateria` | `acer-wmi-battery/health_mode` | `0` o `1` |
 | `bateria_ec` | `acer-wmi/nitro_sense/battery_limiter` | `0` o `1` |
 | `turbo` | `intel_pstate/no_turbo` | `0` o `1` |
-| `ventiladores` | `acer-wmi/nitro_sense/fan_speed` | `0,0` (automatico) o los dos entre 20 y 100 |
+| `ventiladores` | `acer-wmi/nitro_sense/fan_speed` | `0,0` (automatico) o los dos entre 30 y 100 |
 | `overdrive` | `acer-wmi/nitro_sense/lcd_override` | `0` o `1` |
 | `rgb_efecto` | `acer-wmi/four_zoned_kb/four_zone_mode` | `modo,vel,brillo,dir,R,G,B` con rango por campo |
 | `rgb_zonas` | `acer-wmi/four_zoned_kb/per_zone_mode` | 4 colores `RRGGBB` + brillo 0..100 |

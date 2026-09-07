@@ -1046,9 +1046,13 @@ class ControlNitro:
 
     #: Minimo por ciento que la aplicacion deja poner a mano.  Tiene que ser el
     #: mismo FAN_MIN_PCT que el helper, o la interfaz ofreceria un valor que el
-    #: helper rechaza con codigo 2.  NO es una medida: es una eleccion
-    #: prudente, y esta explicada en packaging/nitro-gekko-helper.
-    FAN_MIN_PCT = 20
+    #: helper rechaza con codigo 2.
+    #:
+    #: MEDIDO, no elegido: por debajo de ~25 % el EC impone su propio suelo
+    #: (~2590 rpm) y las rpm dejan de bajar, asi que pedir 1 % y pedir 20 %
+    #: hacen lo mismo.  30 es el escalon mas bajo que todavia se distingue.  La
+    #: tabla entera del barrido esta en packaging/nitro-gekko-helper.
+    FAN_MIN_PCT = 30
 
     def hay_ventiladores_manuales(self) -> bool:
         """True si el driver deja fijar la velocidad de los ventiladores."""

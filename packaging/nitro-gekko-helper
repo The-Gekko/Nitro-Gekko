@@ -172,14 +172,27 @@ PL1_MAX_W = 65
 # lo que valga el otro campo, y una interfaz privilegiada no puede tener eso.
 # O los dos a 0 (automatico), o los dos entre el minimo y 100.
 #
-# EL MINIMO NO ES UNA MEDIDA. Es una eleccion prudente: por debajo de ese
-# porcentaje el ventilador puede quedarse parado o casi, y el sintoma seria un
-# portatil que se calienta y se limita solo sin que nadie entienda por que. No
-# hay aqui forma de medir el suelo real del EC sin escribir en el hardware, asi
-# que se elige alto y se dice que es una eleccion. Si alguien barre de 100 a 1
-# anotando fan1_input y fan2_input del hwmon 'acer', que cambie este numero por
-# el medido y lo apunte.
-FAN_MIN_PCT = 20
+# EL MINIMO SI ES UNA MEDIDA, y no protege de lo que parecia.
+#
+# Barrido de 100 a 1 en este equipo (packaging/medir-ventiladores.sh, 10 s por
+# escalon, en reposo y en 'balanced'), rpm de CPU y de GPU:
+#
+#     100 -> 6614 / 6614      40 -> 3417 / 3343       9 -> 2604 / 2545
+#      80 -> 5659 / 5644      30 -> 2691 / 2623       5 -> 2591 / 2539
+#      60 -> 4597 / 4568      20 -> 2591 / 2530       1 -> 2591 / 2539
+#
+# De 20 % para abajo las rpm NO bajan: el EC impone su propio suelo en torno a
+# 2590 rpm y se queda ahi por mucho que se le pida menos. Dos consecuencias:
+#
+#   1. El ventilador no se para nunca, asi que el riesgo del que este minimo
+#      pretendia proteger no existe.
+#   2. Todo el tramo por debajo de ~25 % hace EXACTAMENTE lo mismo. Aceptarlo
+#      seria ofrecer veinte valores distintos que dan un solo resultado, que es
+#      el mismo problema que ya tiene documentado usb_charging.
+#
+# 30 es el escalon mas bajo que todavia se distingue del suelo (2691 frente a
+# 2591). Por debajo, el numero deja de significar nada.
+FAN_MIN_PCT = 30
 FAN_MAX_PCT = 100
 
 
