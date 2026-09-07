@@ -1,0 +1,63 @@
+name: Mi Acer no esta en la tabla
+description: Pedir o aportar compatibilidad para otro modelo Acer
+labels: ["modelo"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Lee antes «Anade tu modelo» en el README.** Casi todo se resuelve
+        forzando el quirk por parametro de modulo, sin recompilar y sin abrir
+        esto. Lo que de verdad hace falta aqui es **lo que has probado en tu
+        maquina**: sin eso, tu modelo no entra en la tabla, porque este
+        proyecto no promete compatibilidad que no puede sostener.
+
+  - type: input
+    id: modelo
+    attributes:
+      label: Modelo exacto
+      description: La salida literal de `cat /sys/class/dmi/id/product_name`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: prueba
+    attributes:
+      label: Que aparece al forzar el quirk
+      description: >-
+        Despues de `sudo modprobe -r linuwu_sense` y
+        `sudo modprobe linuwu_sense nitro_v4=1` (o `predator_v4=1`).
+      value: |
+        cat /sys/class/dmi/id/product_name
+        cat /sys/class/dmi/id/board_name
+        ls /sys/devices/platform/acer-wmi/
+        ls /sys/devices/platform/acer-wmi/nitro_sense/ 2>/dev/null
+        ls /sys/devices/platform/acer-wmi/predator_sense/ 2>/dev/null
+        cat /sys/firmware/acpi/platform_profile_choices
+        sensors | grep -iA3 acer
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: probado
+    attributes:
+      label: Que has comprobado TU, en tu maquina
+      description: Marca solo lo que hayas visto funcionar de verdad.
+      options:
+        - label: Cambiar de perfil termico y notar el cambio
+        - label: Las RPM de los ventiladores se leen y varian
+        - label: El teclado RGB cambia de color de verdad
+        - label: El limite de carga de bateria
+
+  - type: textarea
+    id: rgb
+    attributes:
+      label: Si el RGB no funciona, comprueba si tu teclado va por i2c-HID
+      description: >-
+        Los Acer de 2025 llevan un controlador ENE KB5130: ahi las escrituras
+        WMI devuelven exito y el teclado las ignora, y no hay nada que hacer
+        desde este driver.
+      value: |
+        ls /sys/bus/i2c/devices
+        ls /sys/bus/hid/devices
+      render: shell

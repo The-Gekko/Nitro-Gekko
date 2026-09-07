@@ -115,7 +115,15 @@ detectar_usuario() {
     if [[ -z "$HOME_USUARIO" ]]; then
         HOME_USUARIO="${HOME:-/root}"
     fi
-    DIR_EXTENSIONES="${HOME_USUARIO}/.local/share/gnome-shell/extensions"
+    # Se deja sobrescribir desde fuera A PROPOSITO.
+    #
+    # Sin esto no se puede empaquetar: dentro de makepkg el HOME es el de root,
+    # asi que el paquete acababa conteniendo
+    # root/.local/share/gnome-shell/extensions/... (comprobado construyendo el
+    # paquete).  Un PKGBUILD pasa DIR_EXTENSIONES=/usr/share/gnome-shell/
+    # extensions y la extension cae donde debe.  Sin la variable, el
+    # comportamiento es exactamente el de siempre.
+    DIR_EXTENSIONES="${DIR_EXTENSIONES:-${HOME_USUARIO}/.local/share/gnome-shell/extensions}"
 }
 
 # ---------------------------------------------------------------------------
@@ -342,6 +350,20 @@ poner_arbol() {
     # Basura de Python: no tiene nada que hacer en /usr.
     find "${DESTDIR}${destino}" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
     find "${DESTDIR}${destino}" -name '*.pyc' -type f -delete 2>/dev/null || true
+    # Basura del editor.  Se limpia en el DESTINO y no en el origen a proposito:
+    # asi se lleva por delante tambien la que instalaron versiones anteriores.
+    # Paso real: /usr/lib/nitro-gekko/gekkonitro/window.py.bak, 35938 bytes,
+    # instalado como codigo de sistema porque `cp -a` copia todo lo que
+    # encuentra y quedandose ahi para siempre, porque `cp -a` tampoco borra.
+    # No es cosmetico: era codigo viejo, propiedad de root, dentro de /usr.
+    local basura=0 sobrante
+    while IFS= read -r sobrante; do
+        rm -f "$sobrante" && basura=$(( basura + 1 ))
+    done < <(find "${DESTDIR}${destino}" -type f \
+                  \( -name '*.bak' -o -name '*.orig' -o -name '*.rej' \
+                     -o -name '*~' -o -name '*.swp' -o -name '*.swo' \
+                     -o -name '*.tmp' \) 2>/dev/null)
+    (( basura > 0 )) && info "Se han quitado $basura fichero(s) de basura del editor de ${destino}/."
     # 'cp -a' equivale a '--preserve=all': arrastra el modo Y el propietario
     # del repositorio.  Sin normalizar, un clon hecho con umask 002 dejaba
     # /usr/lib/nitro-gekko/gekkonitro/*.py como 664 usuario:usuario, es decir
@@ -437,7 +459,7 @@ instalar() {
 
     # -- permisos (1): helper privilegiado + politica polkit -----------------
     # Este es el camino POR DEFECTO. El helper corre como root via pkexec y solo
-    # acepta DIEZ acciones con nombre; la lista de rutas vive dentro de el, no
+    # acepta TRECE acciones con nombre; la lista de rutas vive dentro de el, no
     # se le pasa desde fuera.  Ver 'Seguridad y permisos' en el README.
     poner 755 "$RAIZ/packaging/$FICHERO_HELPER" "$DIR_APP/$FICHERO_HELPER" || true
     if [[ -f "$RAIZ/packaging/$FICHERO_POLICY" ]]; then
@@ -966,6 +988,10 @@ $APP_NOMBRE - instalador de la aplicacion
                puesto, NO se recarga udev, ni tmpfiles, ni las caches del
                escritorio, ni se toca /sys.
     PREFIX     Prefijo de instalacion. Por omision /usr.
+    DIR_EXTENSIONES
+               Donde se copia la extension de GNOME Shell. Por omision, la
+               carpeta del usuario que lanzo el sudo. Un paquete la pone en
+               /usr/share/gnome-shell/extensions.
     DIR_DMI    Directorio de identificacion del equipo. Por omision
                /sys/class/dmi/id. Solo sirve para probar el aviso de
                hardware no compatible sin tener otro portatil delante.
@@ -1043,9 +1069,15 @@ main() {
         exit 1
     fi
 
-    comprobar_hardware
-    comprobar_modulo
-    comprobar_grupo_wheel
+    # Con DESTDIR puesto se esta construyendo un arbol de ficheros, no
+    # instalando en esta maquina: diagnosticar el equipo de la jaula de
+    # compilacion no dice nada util y ensucia la salida de makepkg.  No cambian
+    # el codigo de salida (son avisos), asi que saltarselas no altera nada mas.
+    if [[ -z "$DESTDIR" ]]; then
+        comprobar_hardware
+        comprobar_modulo
+        comprobar_grupo_wheel
+    fi
     instalar
     recargar
 

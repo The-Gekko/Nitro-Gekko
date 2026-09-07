@@ -41,6 +41,9 @@ PERIODO_GPU = 5
 #: Espera tras el ultimo cambio del selector de PL1 antes de escribirlo.
 #: Agrupa la rafaga de clics en «+» en una sola escritura privilegiada.
 RETARDO_PL1_MS = 700
+#: Lo mismo para los dos selectores de velocidad de ventilador, y por el mismo
+#: motivo: cada clic en «+» emite su notify y cada uno seria un pkexec.
+RETARDO_FAN_MS = 700
 
 #: Iconos por perfil.  Se usan en el desplegable y en la fila de RPM tipicas.
 ICONOS_PERFIL = {
@@ -64,6 +67,31 @@ AVISO_BP = (
     "(con guion) del kernel, no encaja, y deja su propiedad ActiveProfile sin "
     "valor. El portatil funciona con normalidad; solo el menu se queda vacio "
     "hasta que elijas otro perfil."
+)
+
+#: Aviso del control manual de ventiladores.  Dice las tres cosas que hay que
+#: saber y ninguna que no se pueda sostener: se vuelve al automatico por dos
+#: caminos, y NO sobrevive a un reinicio.
+AVISO_VENTILADORES = (
+    "Con el control manual los ventiladores dejan de responder a la "
+    "temperatura: giran al porcentaje que pongas.\n\n"
+    "Se vuelve al automatico apagando este interruptor, y tambien poniendo el "
+    "perfil en Silencioso o Bajo consumo, porque el propio driver se lo "
+    "devuelve al EC.\n\n"
+    "No sobrevive a un reinicio: el driver guarda el estado al descargarse el "
+    "modulo, no al apagar, asi que lo que reaparezca puede ser un valor viejo."
+)
+
+#: Subtitulo cuando el driver no publica la velocidad de los ventiladores.
+AYUDA_SIN_VENTILADORES = (
+    "No disponible: hace falta el driver linuwu_sense, que instala "
+    "«sudo ./packaging/instalar-rgb.sh»."
+)
+
+#: Subtitulo cuando el driver no publica el overdrive del panel.
+AYUDA_SIN_OVERDRIVE = (
+    "No disponible: hace falta el driver linuwu_sense, que instala "
+    "«sudo ./packaging/instalar-rgb.sh»."
 )
 
 #: Explicacion del «Not charging» que confunde a todo el mundo.
@@ -134,6 +162,11 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._hw_salud: bool | None = None
         self._hw_turbo: bool | None = None
         self._hw_pl1_w: float | None = None
+        self._hw_fan_manual: bool | None = None
+        self._hw_fan_cpu: int | None = None
+        self._hw_fan_gpu: int | None = None
+        self._hw_overdrive: bool | None = None
+        self._id_fan: int | None = None
         self._gpu_consultando = False
 
         self._toasts = Adw.ToastOverlay()
@@ -213,6 +246,7 @@ class VentanaNitro(Adw.ApplicationWindow):
         pagina.add(self._grupo_ventiladores())
         pagina.add(self._grupo_potencia())
         pagina.add(self._grupo_bateria())
+        pagina.add(self._grupo_pantalla())
         pagina.add(self._grupo_temperaturas())
 
         # La pagina de teclado solo existe si el driver linuwu_sense esta
@@ -401,6 +435,88 @@ class VentanaNitro(Adw.ApplicationWindow):
         )
         grupo.add(self._fila_fan1)
         grupo.add(self._fila_fan2)
+
+        # -- control manual ------------------------------------------------
+        # Es la funcion que en Windows trae NitroSense y la unica de la
+        # aplicacion que puede EMPEORAR el equipo si se usa mal, asi que se
+        # ensena con su aviso y con el automatico como estado de partida.
+        self._hay_fan_manual = self._control.hay_ventiladores_manuales()
+
+        self._sw_fan_manual = Adw.SwitchRow(
+            title="Control manual",
+            subtitle="Apagado: los lleva el EC segun la temperatura.",
+        )
+        self._sw_fan_manual.set_subtitle_lines(3)
+        icono_aviso = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        icono_aviso.set_tooltip_text(AVISO_VENTILADORES)
+        icono_aviso.add_css_class("warning")
+        self._sw_fan_manual.add_suffix(icono_aviso)
+        self._sw_fan_manual.set_tooltip_text(AVISO_VENTILADORES)
+
+        self._spin_fan_cpu = Adw.SpinRow.new_with_range(
+            self._control.FAN_MIN_PCT, 100, 5
+        )
+        self._spin_fan_cpu.set_title("Ventilador de CPU")
+        self._spin_fan_cpu.set_subtitle("Por ciento")
+        self._spin_fan_gpu = Adw.SpinRow.new_with_range(
+            self._control.FAN_MIN_PCT, 100, 5
+        )
+        self._spin_fan_gpu.set_title("Ventilador de GPU")
+        self._spin_fan_gpu.set_subtitle("Por ciento")
+        for spin in (self._spin_fan_cpu, self._spin_fan_gpu):
+            spin.set_value(100)
+            spin.set_sensitive(False)
+
+        if not self._hay_fan_manual:
+            # Igual que el resto: DESACTIVADO y diciendo que falta, nunca
+            # apagado, que afirmaria que la funcion existe y esta en reposo.
+            self._sw_fan_manual.set_sensitive(False)
+            self._sw_fan_manual.set_subtitle(AYUDA_SIN_VENTILADORES)
+        else:
+            self._sw_fan_manual.connect("notify::active", self._al_cambiar_fan_manual)
+            self._spin_fan_cpu.connect("notify::value", self._al_cambiar_fan_pct)
+            self._spin_fan_gpu.connect("notify::value", self._al_cambiar_fan_pct)
+
+        grupo.add(self._sw_fan_manual)
+        grupo.add(self._spin_fan_cpu)
+        grupo.add(self._spin_fan_gpu)
+        return grupo
+
+    def _grupo_pantalla(self) -> Adw.PreferencesGroup:
+        """Overdrive del panel.
+
+        No se promete ninguna cifra de tiempo de respuesta: la que da la ficha
+        de Acer no es una medida de este equipo y la aplicacion no tiene forma
+        de comprobarla.  Lo unico que si se comprueba es que el atributo relee
+        lo que se le escribe.
+        """
+        grupo = Adw.PreferencesGroup(title="Pantalla")
+        self._sw_overdrive = Adw.SwitchRow(
+            title="Overdrive del panel",
+            subtitle="Acelera el cambio de color de los pixeles. Puede dejar "
+                     "estelas de color en los bordes.",
+        )
+        self._sw_overdrive.set_subtitle_lines(3)
+
+        if not self._control.hay_overdrive():
+            self._sw_overdrive.set_sensitive(False)
+            self._sw_overdrive.set_subtitle(AYUDA_SIN_OVERDRIVE)
+        else:
+            valor = self._control.leer_overdrive()
+            if valor not in (0, 1):
+                # El driver ha devuelto algo que no es 0 ni 1 (o nada). No se
+                # sabe como esta, y un interruptor apagado seria una
+                # afirmacion: se deja desactivado diciendolo.
+                self._sw_overdrive.set_sensitive(False)
+                self._sw_overdrive.set_subtitle(
+                    "El driver no devuelve un estado que se pueda interpretar, "
+                    "asi que no se toca."
+                )
+            else:
+                self._hw_overdrive = bool(valor)
+                self._sw_overdrive.set_active(self._hw_overdrive)
+                self._sw_overdrive.connect("notify::active", self._al_cambiar_overdrive)
+        grupo.add(self._sw_overdrive)
         return grupo
 
     def _fila_ventilador(self, titulo: str, fichero: str):
@@ -690,11 +806,14 @@ class VentanaNitro(Adw.ApplicationWindow):
         """La ventana se cierra: se para todo y no se vuelve a arrancar."""
         self._cerrada = True
         self._parar_bucles()
-        # Tambien la escritura de PL1 que estuviera esperando su retardo: si no,
-        # se dispararia un pkexec con la ventana ya cerrada.
-        if self._id_pl1 is not None:
-            GLib.source_remove(self._id_pl1)
-            self._id_pl1 = None
+        # Tambien las escrituras que estuvieran esperando su retardo (PL1 y
+        # ventiladores): si no, se dispararia un pkexec con la ventana ya
+        # cerrada.
+        for atributo in ("_id_pl1", "_id_fan"):
+            ident = getattr(self, atributo, None)
+            if ident is not None:
+                GLib.source_remove(ident)
+                setattr(self, atributo, None)
         return False
 
     def _tic_rapido(self) -> bool:
@@ -733,14 +852,44 @@ class VentanaNitro(Adw.ApplicationWindow):
                 self._hw_turbo = not estado.no_turbo
                 self._sw_turbo.set_active(self._hw_turbo)
 
-            # Bateria.
+            # Bateria.  Con el modulo DKMS instalado el valor llega aqui; si
+            # el limite lo lleva el EC llega por el ciclo lento, porque esa
+            # lectura cuesta 4,9 ms de WMI (ver fuente_limite_carga()).
             if estado.health_mode is not None:
                 self._hw_salud = estado.health_mode
                 self._sw_salud.set_active(estado.health_mode)
             self._actualizar_subtitulo_bateria(estado)
+
+            # Ventiladores manuales.  Se siguen a 1 Hz porque el estado puede
+            # cambiar SIN que lo haya hecho la aplicacion: el propio driver los
+            # devuelve al automatico al pasar a Silencioso o Bajo consumo.
+            self._actualizar_ventiladores_manuales(estado)
         finally:
             self._cargando = False
         return GLib.SOURCE_CONTINUE
+
+    def _actualizar_ventiladores_manuales(self, estado: sysfs.EstadoRapido) -> None:
+        """Refleja en la interfaz lo que dice el hardware.
+
+        Se llama desde dentro del bloque con ``self._cargando`` puesto, asi que
+        mover los widgets aqui no dispara ninguna escritura.
+        """
+        if not self._hay_fan_manual:
+            return
+        cpu, gpu = estado.fan_cpu_pct, estado.fan_gpu_pct
+        if cpu is None or gpu is None:
+            return
+        manual = not (cpu == 0 and gpu == 0)
+        self._hw_fan_manual = manual
+        self._hw_fan_cpu, self._hw_fan_gpu = (cpu, gpu) if manual else (None, None)
+        self._sw_fan_manual.set_active(manual)
+        for spin in (self._spin_fan_cpu, self._spin_fan_gpu):
+            spin.set_sensitive(manual)
+        if manual and not (self._spin_fan_cpu.has_focus() or self._spin_fan_gpu.has_focus()):
+            # Solo se pisa el valor del usuario si no lo esta tecleando.
+            minimo = self._control.FAN_MIN_PCT
+            self._spin_fan_cpu.set_value(max(minimo, min(100, cpu)))
+            self._spin_fan_gpu.set_value(max(minimo, min(100, gpu)))
 
     def _actualizar_pl1(self, estado: sysfs.EstadoRapido) -> None:
         msr, mmio = estado.pl1_msr_w, estado.pl1_mmio_w
@@ -836,6 +985,11 @@ class VentanaNitro(Adw.ApplicationWindow):
             self._lbl_temp_bat.set_label(
                 "—" if estado.temp_bateria is None else f"{estado.temp_bateria:.1f} °C"
             )
+            # Solo llega con valor cuando el limite de carga lo lleva el EC, o
+            # sea cuando NO esta el modulo del AUR.
+            if estado.limite_carga_ec is not None:
+                self._hw_salud = estado.limite_carga_ec
+                self._sw_salud.set_active(estado.limite_carga_ec)
         finally:
             self._cargando = False
         return GLib.SOURCE_CONTINUE
@@ -1564,6 +1718,81 @@ class VentanaNitro(Adw.ApplicationWindow):
         # El interruptor esta INVERTIDO respecto a no_turbo.
         self._lanzar_escritura(
             lambda cb: self._control.escribir_no_turbo(not deseado, al_terminar=cb),
+            al_exito,
+            al_fallo,
+        )
+
+    def _al_cambiar_fan_manual(self, *_args) -> None:
+        """Interruptor de control manual de ventiladores."""
+        deseado = self._sw_fan_manual.get_active()
+        if self._cargando or self._hw_fan_manual is None or deseado == self._hw_fan_manual:
+            return
+        previo = self._hw_fan_manual
+
+        def al_fallo() -> None:
+            self._cargando = True
+            self._sw_fan_manual.set_active(previo)
+            self._cargando = False
+
+        def al_exito() -> None:
+            self._hw_fan_manual = deseado
+
+        if deseado:
+            cpu = int(self._spin_fan_cpu.get_value())
+            gpu = int(self._spin_fan_gpu.get_value())
+            lanzar = lambda cb: self._control.escribir_ventiladores(cpu, gpu, al_terminar=cb)
+        else:
+            lanzar = lambda cb: self._control.escribir_ventiladores(None, None, al_terminar=cb)
+        self._lanzar_escritura(lanzar, al_exito, al_fallo)
+
+    def _al_cambiar_fan_pct(self, *_args) -> None:
+        """Programa la escritura de los dos porcentajes, con retardo.
+
+        Mismo motivo que el PL1: cada clic en «+» emite su notify, y sin
+        retardo cada uno seria una invocacion del helper como root.
+        """
+        if self._id_fan is not None:
+            GLib.source_remove(self._id_fan)
+            self._id_fan = None
+        if self._cargando or not self._sw_fan_manual.get_active():
+            return
+        self._id_fan = GLib.timeout_add(RETARDO_FAN_MS, self._escribir_fan_ahora)
+
+    def _escribir_fan_ahora(self) -> bool:
+        self._id_fan = None
+        if self._cargando or not self._sw_fan_manual.get_active():
+            return GLib.SOURCE_REMOVE
+        cpu = int(self._spin_fan_cpu.get_value())
+        gpu = int(self._spin_fan_gpu.get_value())
+        if (cpu, gpu) == (self._hw_fan_cpu, self._hw_fan_gpu):
+            return GLib.SOURCE_REMOVE
+
+        def al_exito() -> None:
+            self._hw_fan_cpu, self._hw_fan_gpu = cpu, gpu
+
+        self._lanzar_escritura(
+            lambda cb: self._control.escribir_ventiladores(cpu, gpu, al_terminar=cb),
+            al_exito,
+            lambda: None,
+        )
+        return GLib.SOURCE_REMOVE
+
+    def _al_cambiar_overdrive(self, *_args) -> None:
+        deseado = self._sw_overdrive.get_active()
+        if self._cargando or self._hw_overdrive is None or deseado == self._hw_overdrive:
+            return
+        previo = self._hw_overdrive
+
+        def al_fallo() -> None:
+            self._cargando = True
+            self._sw_overdrive.set_active(previo)
+            self._cargando = False
+
+        def al_exito() -> None:
+            self._hw_overdrive = deseado
+
+        self._lanzar_escritura(
+            lambda cb: self._control.escribir_overdrive(deseado, al_terminar=cb),
             al_exito,
             al_fallo,
         )

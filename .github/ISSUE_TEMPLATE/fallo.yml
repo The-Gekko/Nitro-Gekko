@@ -1,0 +1,68 @@
+name: Algo no funciona
+description: Un fallo en la aplicacion, en la extension o en los instaladores
+labels: ["fallo"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Este proyecto esta escrito y medido en **un** portatil (Acer Nitro
+        AN17-51, Arch, GNOME 50). Cuanto mas se parezca tu informe a una medida
+        y menos a una impresion, mas facil es arreglarlo.
+
+  - type: textarea
+    id: diagnostico
+    attributes:
+      label: Salida de ./packaging/preparar-sistema.sh --revisar
+      description: >-
+        No toca nada y no pide root. Es lo primero que se mira, asi que sin
+        esto no se puede empezar.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: equipo
+    attributes:
+      label: Equipo y versiones
+      description: Pega la salida entera de estas ordenes.
+      value: |
+        cat /sys/class/dmi/id/product_name
+        cat /sys/class/dmi/id/board_name
+        uname -r
+        gnome-shell --version
+        dkms status
+        cat /sys/firmware/acpi/platform_profile_choices
+        ls /sys/devices/platform/acer-wmi/
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: que-pasa
+    attributes:
+      label: Que pasa, y que esperabas que pasara
+      description: >-
+        Si es un mensaje de error, pegalo tal cual. Si es la extension, anade
+        la salida de `journalctl -b -o cat /usr/bin/gnome-shell | tail -40`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducir
+    attributes:
+      label: Como se reproduce
+      description: Los pasos exactos, desde una sesion recien iniciada.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: modo
+    attributes:
+      label: Como lo instalaste
+      options:
+        - packaging/install.sh (modo polkit, el de por defecto)
+        - packaging/install.sh --con-udev
+        - Paquete del AUR
+        - Ejecutandolo desde el repositorio con ./nitro-gekko
+    validations:
+      required: true

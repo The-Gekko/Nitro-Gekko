@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Antes de abrir nada, el diagnostico
+    url: https://github.com/The-Gekko/Nitro-Gekko#anade-tu-modelo
+    about: >-
+      Si tu Acer no es un AN17-51, lee «Anade tu modelo»: la mayoria de los
+      casos se resuelven forzando el quirk por parametro de modulo, sin tocar
+      codigo y sin abrir una incidencia.
+  - name: Me he quedado sin perfiles termicos ni ventiladores
+    url: https://github.com/The-Gekko/Nitro-Gekko#el-riesgo-real-de-este-paso-dicho-claro
+    about: >-
+      Se sale con dos ordenes, y estan escritas dentro del propio
+      /etc/modprobe.d/nitro-gekko-rgb.conf. Leelo antes de reinstalar nada.

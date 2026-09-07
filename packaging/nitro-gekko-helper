@@ -39,6 +39,9 @@ valida contra el propio kernel antes de escribirlo.
     nitro-gekko-helper usb_carga       <0|10|20|30>
     nitro-gekko-helper calibracion     <0|1>
     nitro-gekko-helper sonido_arranque <0|1>
+    nitro-gekko-helper overdrive       <0|1>   # 1 = overdrive del panel
+    nitro-gekko-helper ventiladores    <cpu,gpu>  # 0,0 = automatico
+    nitro-gekko-helper bateria_ec      <0|1>   # limite de carga por el EC
 
 === POR QUE EL SHEBANG ES ASI Y NO `#!/usr/bin/env python3` ===
 
@@ -119,6 +122,13 @@ RETRO_TIMEOUT = ACER_WMI / "nitro_sense" / "backlight_timeout"
 USB_CARGA = ACER_WMI / "nitro_sense" / "usb_charging"
 CALIBRACION = ACER_WMI / "nitro_sense" / "battery_calibration"
 SONIDO_ARRANQUE = ACER_WMI / "nitro_sense" / "boot_animation_sound"
+OVERDRIVE = ACER_WMI / "nitro_sense" / "lcd_override"
+VENTILADORES = ACER_WMI / "nitro_sense" / "fan_speed"
+#: Limite de carga POR EL EC. Hace lo mismo que BATERIA (el modulo del AUR
+#: acer-wmi-battery), pero sin depender de ese modulo. La aplicacion prefiere
+#: BATERIA cuando esta, y solo usa esta si no esta; ver el comentario de
+#: fuente_limite_carga() en src/gekkonitro/sysfs.py.
+BATERIA_EC = ACER_WMI / "nitro_sense" / "battery_limiter"
 
 # Rango duro del PL1 en vatios.
 #
@@ -147,6 +157,30 @@ SONIDO_ARRANQUE = ACER_WMI / "nitro_sense" / "boot_animation_sound"
 # valor con el que la maquina arranca de fabrica.
 PL1_MIN_W = 10
 PL1_MAX_W = 65
+
+# Rango de la velocidad manual de los ventiladores, en por ciento.
+#
+# El driver acepta 0..100 por ventilador y le da a los extremos un significado
+# propio (linuwu_sense.c, acer_set_fan_speed):
+#
+#     0,0        -> AUTO: manda el EC.  Es la vuelta atras.
+#     100,100    -> MAX.
+#     otra cosa  -> velocidad fija; y un 0 SUELTO en un campo significa
+#                   "ese ventilador en automatico y el otro fijo".
+#
+# Aqui NO se acepta el 0 suelto: el mismo digito querria decir dos cosas segun
+# lo que valga el otro campo, y una interfaz privilegiada no puede tener eso.
+# O los dos a 0 (automatico), o los dos entre el minimo y 100.
+#
+# EL MINIMO NO ES UNA MEDIDA. Es una eleccion prudente: por debajo de ese
+# porcentaje el ventilador puede quedarse parado o casi, y el sintoma seria un
+# portatil que se calienta y se limita solo sin que nadie entienda por que. No
+# hay aqui forma de medir el suelo real del EC sin escribir en el hardware, asi
+# que se elige alto y se dice que es una eleccion. Si alguien barre de 100 a 1
+# anotando fan1_input y fan2_input del hwmon 'acer', que cambie este numero por
+# el medido y lo apunte.
+FAN_MIN_PCT = 20
+FAN_MAX_PCT = 100
 
 
 def salir(codigo: int, mensaje: str) -> None:
@@ -442,6 +476,45 @@ def validar_usb_carga(valor: str) -> str:
     return valor
 
 
+def validar_ventiladores(valor: str) -> str:
+    """Velocidad manual de los ventiladores: "cpu,gpu" en por ciento.
+
+    Acepta exactamente dos formas:
+        "0,0"          -> automatico (se lo devuelve al EC)
+        "<n>,<m>"      -> los DOS entre FAN_MIN_PCT y 100
+
+    Se reconstruye la cadena a partir de los dos enteros ya comprobados, como
+    todos los validadores de este fichero: lo que llega no se escribe nunca.
+    """
+    partes = valor.split(",")
+    if len(partes) != 2:
+        salir(2, f"Ventiladores invalidos: {valor!r}. Se esperaba 'cpu,gpu'.")
+    numeros = []
+    for parte, cual in zip(partes, ("CPU", "GPU")):
+        n = entero(parte)
+        if n is None:
+            salir(2, f"Velocidad de {cual} invalida: {parte!r}. Se esperaba un entero.")
+        numeros.append(n)
+    cpu, gpu = numeros
+    if cpu == 0 and gpu == 0:
+        return "0,0"
+    if cpu == 0 or gpu == 0:
+        salir(
+            2,
+            f"Velocidad invalida: {valor!r}. Un 0 suelto significa 'ese ventilador "
+            f"en automatico', que aqui no se acepta: o los dos a 0, o los dos "
+            f"entre {FAN_MIN_PCT} y {FAN_MAX_PCT}.",
+        )
+    for n, cual in ((cpu, "CPU"), (gpu, "GPU")):
+        if not (FAN_MIN_PCT <= n <= FAN_MAX_PCT):
+            salir(
+                2,
+                f"Velocidad de {cual} fuera de rango: {n} %. Permitido "
+                f"{FAN_MIN_PCT}..{FAN_MAX_PCT}, o 0,0 para automatico.",
+            )
+    return f"{cpu},{gpu}"
+
+
 def aplicar_ruta_binaria(ruta: Path):
     def aplicar(valor: str) -> None:
         escribir(ruta, valor)
@@ -463,6 +536,9 @@ ACCIONES = {
     "usb_carga": (validar_usb_carga, aplicar_ruta_binaria(USB_CARGA)),
     "calibracion": (validar_binario("calibracion"), aplicar_ruta_binaria(CALIBRACION)),
     "sonido_arranque": (validar_binario("sonido_arranque"), aplicar_ruta_binaria(SONIDO_ARRANQUE)),
+    "overdrive": (validar_binario("overdrive"), aplicar_ruta_binaria(OVERDRIVE)),
+    "ventiladores": (validar_ventiladores, aplicar_ruta_binaria(VENTILADORES)),
+    "bateria_ec": (validar_binario("bateria_ec"), aplicar_ruta_binaria(BATERIA_EC)),
 }
 
 

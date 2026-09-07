@@ -44,6 +44,43 @@ Shell](#la-extension-de-gnome-shell).
 
 ---
 
+## Instalacion rapida, y lo que toca de tu sistema
+
+```bash
+git clone https://github.com/The-Gekko/Nitro-Gekko.git
+cd Nitro-Gekko
+./packaging/preparar-sistema.sh --revisar   # diagnostico: NO toca nada
+sudo ./packaging/preparar-sistema.sh        # 1. el hardware
+sudo ./packaging/instalar-rgb.sh            # 2. el driver del teclado RGB
+sudo ./packaging/install.sh                 # 3. la aplicacion
+```
+
+**Lo que tienes que saber antes del paso 2, y no despues.** Ese paso instala un
+modulo de kernel por DKMS y **pone `acer_wmi` en la lista negra**, porque los
+dos drivers reclaman los mismos GUID de WMI. A partir de ahi, los perfiles
+termicos y las RPM dependen de que ese modulo compile en cada kernel nuevo. Si
+un dia no compila, arrancas sin perfiles, sin RPM y sin RGB. No se rompe nada
+fisico y se sale con dos ordenes, que estan escritas dentro del propio
+`/etc/modprobe.d/nitro-gekko-rgb.conf`:
+
+```bash
+sudo rm /etc/modprobe.d/nitro-gekko-rgb.conf /etc/modules-load.d/linuwu-sense.conf
+echo 'options acer_wmi predator_v4=1' | sudo tee /etc/modprobe.d/acer-wmi.conf
+```
+
+**Si no te compensa ese riesgo, saltate el paso 2.** Con los pasos 1 y 3 tienes
+perfil termico, ventiladores, PL1, turbo, bateria y temperaturas; pierdes el
+teclado RGB, el control manual de los ventiladores y el overdrive del panel, y
+**no se toca ningun modulo del kernel**. La aplicacion oculta sola lo que no
+haya.
+
+Todo esto, con detalle y con las medidas: [Instalacion](#instalacion), [El
+riesgo real de este paso, dicho
+claro](#el-riesgo-real-de-este-paso-dicho-claro) y
+[Desinstalacion](#desinstalacion).
+
+---
+
 ## Que es
 
 Una aplicacion de escritorio y una extension de GNOME Shell que ponen en un
@@ -54,11 +91,13 @@ sitio comodo lo que en este portatil solo se puede tocar escribiendo a mano en
   (`low-power`, `quiet`, `balanced`, `balanced-performance`, `performance`),
   leidos del kernel, no codificados a fuego.
 - **Ventiladores** — RPM del ventilador de CPU y del de GPU, en vivo,
-  con las RPM tipicas de cada perfil medidas en este equipo como referencia.
+  con las RPM tipicas de cada perfil medidas en este equipo como referencia, y
+  **control manual** de los dos, que es lo que en Windows hace NitroSense.
 - **Potencia** — limite de potencia sostenida de la CPU (PL1), estado del
   turbo, y un interruptor para **reaplicar el PL1 cuando cambias de perfil**
   (hace falta: el firmware reescribe el PL1 por MMIO en cada cambio).
 - **Bateria** — limite de carga al 80 % y temperatura de la bateria.
+- **Pantalla** — overdrive del panel.
 - **Teclado RGB de 4 zonas** — efectos del firmware, color por zona y los
   extras del EC (apagado automatico, carga USB, sonido de arranque).
 - **Temperaturas** — paquete de CPU, frecuencia media y datos de la GPU.
@@ -155,11 +194,16 @@ Lo que importa es que **el fichero exista y no salga vacio**, no que diga
 exactamente eso: la aplicacion lee la lista del kernel y pinta los perfiles que
 haya. Si tu equipo expone tres en vez de cinco, veras tres, no un error.
 
-**Opcional.** El modulo DKMS `acer-wmi-battery`, que no viene con el kernel.
-En el AUR hay dos paquetes: `acer-wmi-battery-dkms` y
-`acer-wmi-battery-dkms-git`. Aqui esta probado con el **`-git`**. Sin este
-modulo todo funciona menos el limite de carga al 80 %: esa fila aparece
-**desactivada**, y su subtitulo trae el `yay -S` que hace falta para tenerla.
+**Opcional, y ya no imprescindible.** El modulo DKMS `acer-wmi-battery`, que no
+viene con el kernel. En el AUR hay dos paquetes: `acer-wmi-battery-dkms` y
+`acer-wmi-battery-dkms-git`. Aqui esta probado con el **`-git`**.
+
+El **limite de carga al 80 % ya no depende de el**: si no esta, la aplicacion lo
+lleva por `nitro_sense/battery_limiter`, del propio `linuwu_sense`. Lo que si se
+pierde sin este modulo es **la temperatura de la bateria**, que la publica el
+modulo y no el EC. Cual de los dos caminos se usa, y por que, esta en
+[Overdrive del panel y limite de carga por el
+EC](#overdrive-del-panel-y-limite-de-carga-por-el-ec).
 
 Si quieres ademas que el limite quede puesto ya al cargar el modulo, el propio
 modulo trae un parametro para eso (por omision **no** toca lo que hubiera):
@@ -273,6 +317,121 @@ propio modulo al descargarse (es codigo del upstream, no de este repositorio).
 Son 44 bytes binarios y no estorban a nada, pero si quieres dejarlo todo limpio:
 `sudo rm -f /etc/four_zone_kb_state`.
 
+## Anade tu modelo
+
+Si tu Acer no esta en la tabla DMI del driver, esto es lo que hay que hacer. La
+buena noticia es que **la mayoria de la gente resuelve su caso en el paso 2, sin
+recompilar nada**.
+
+**1. Averigua tu identificacion.** Es lo unico que hace falta para todo lo demas:
+
+```bash
+cat /sys/class/dmi/id/product_name    # p. ej. Nitro AN17-51
+cat /sys/class/dmi/id/board_name      # p. ej. Spacia_RTH
+```
+
+**2. Pruebalo ANTES de tocar una linea de C.** El driver acepta forzar el tipo
+de equipo por parametro de modulo, y eso se deshace reiniciando:
+
+```bash
+sudo modprobe -r linuwu_sense
+sudo modprobe linuwu_sense nitro_v4=1      # Nitro de 2023 en adelante
+# o bien
+sudo modprobe linuwu_sense predator_v4=1   # Predator Helios/Neo
+```
+
+**3. Mira que ha aparecido.** El driver no dice que quirk ha casado, asi que se
+deduce de los directorios que crea:
+
+```bash
+ls /sys/devices/platform/acer-wmi/
+cat /sys/firmware/acpi/platform_profile_choices
+```
+
+| Lo que ves | Que quirk ha casado |
+|---|---|
+| `predator_sense/` con 7 ficheros | `.predator_v4` |
+| `nitro_sense/` con 7 ficheros (con `lcd_override` y `boot_animation_sound`) | `.nitro_v4` |
+| `nitro_sense/` con 5 ficheros | `.nitro_sense` (Nitro V y Nitro antiguos) |
+| `four_zoned_kb/` | `.four_zone_kb` (teclado RGB de 4 zonas) |
+
+Con esto ya tienes perfiles termicos y RPM. **Lo que el parametro NO puede darte
+es el RGB**: el camino del parametro salta a un quirk con `.four_zone_kb = 0`
+explicito, y no existe ningun parametro para forzarlo. Para eso hay que estar en
+la tabla.
+
+**4. Antes de perseguir el RGB, comprueba que tu teclado es de los que van por
+WMI.** Los Acer de 2025 en adelante han movido el RGB a un controlador **ENE
+KB5130 por i2c-HID**, y ahi las escrituras WMI **devuelven exito y el teclado no
+cambia**. Se reconoce asi:
+
+```bash
+ls /sys/bus/i2c/devices | grep -i ene     # si sale ENEK5130, es de esa familia
+```
+
+Si tu equipo es de esa familia, anadir la entrada DMI con `.four_zone_kb=1` solo
+crea un directorio que no enciende nada. Esta reportado al menos en Nitro
+AN18-61, ANV16S-41, AN16S-61 y Predator PHN16S-71 ([issue
+82](https://github.com/0x7375646F/Linuwu-Sense/issues/82), [issue
+84](https://github.com/0x7375646F/Linuwu-Sense/issues/84), [issue
+109](https://github.com/0x7375646F/Linuwu-Sense/issues/109)), y confirmado
+tambien fuera de este driver ([facer
+#287](https://github.com/JafarAkhondali/acer-predator-turbo-and-rgb-keyboard-linux-module/issues/287)).
+
+**5. Anade tu entrada.** En `rgb/src/linuwu_sense.c`, justo detras de la del
+AN17-51, copiando la de un modelo de tu misma hornada:
+
+```c
+{
+    .callback = dmi_matched,
+    .ident = "Acer Nitro ANxx-yy",
+    .matches = {
+        DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
+        DMI_MATCH(DMI_PRODUCT_NAME, "Nitro ANxx-yy"),
+    },
+    .driver_data = &quirk_acer_nitro_an17_51,   /* el que dedujiste en el paso 3 */
+},
+```
+
+**No quites la entrada del AN17-51 ni cambies la version de `rgb/dkms.conf` por
+tu cuenta:** `instalar-rgb.sh` aborta si no encuentra la cadena `Nitro AN17-51`
+en el fuente (asi comprueba que el fuente es el parcheado y no el del upstream,
+que en kernel 7.2 ni compila) y tambien si el nombre y la version del
+`dkms.conf` no coinciden con los suyos.
+
+**6. Instala y comprueba.** `sudo ./packaging/instalar-rgb.sh` verifica solo que
+no se ha perdido nada, y **se revierte solo** si el driver nuevo no repone los
+perfiles ni los tacometros. Si repone eso pero no hay RGB, avisa y te deja
+decidir: quedarse sin RGB no empeora el equipo, quedarse sin perfiles si.
+
+### Que se sabe de cada modelo
+
+Solo el AN17-51 esta probado aqui. Todo lo demas viene del upstream y de lo que
+ha reportado otra gente, y va con su nivel de evidencia y su enlace, para que
+cada uno juzgue. Revisado en septiembre de 2026.
+
+| Modelo | En la tabla | Evidencia | Fuente |
+|---|---|---|---|
+| Nitro AN17-51 | si | **probado aqui** | este repositorio |
+| Nitro AN16-41 / AN16-42 / AN16-43 | si | del upstream | [Linuwu-Sense](https://github.com/0x7375646F/Linuwu-Sense) |
+| Nitro AN515-58 | si | del upstream; con BIOS V2.18 el modo estatico apaga el teclado | [issue 99](https://github.com/0x7375646F/Linuwu-Sense/issues/99) |
+| Predator PHN16-71 / PHN16-72 | si | del upstream | Linuwu-Sense |
+| Nitro ANV15-41 / ANV15-51 / AN515-55 | si, sin RGB | del upstream | Linuwu-Sense |
+| Predator PH16-71 / PH18-71 / PTX17-71 / PH315-53 | si, sin RGB | del upstream | Linuwu-Sense |
+| Nitro ANV15-52 | **no** | confirmado por un tercero con `quirk_acer_nitro` | [PR 117](https://github.com/0x7375646F/Linuwu-Sense/pull/117) |
+| Nitro AN515-45 | **no** | confirmado por un tercero, con RGB, en kernel 6.17 | [PR 92](https://github.com/0x7375646F/Linuwu-Sense/pull/92) |
+| Predator PH315-52 | **no** | confirmado por un tercero (quirk de 2019, no `predator_v4`) | [PR 119](https://github.com/0x7375646F/Linuwu-Sense/pull/119) |
+| Predator PH18-73 | **no** | confirmado por un tercero | [PR 123](https://github.com/0x7375646F/Linuwu-Sense/pull/123) |
+| Predator PHN16-73 | **no** | funciona forzado por parametro; solo falta la entrada DMI | [issue 126](https://github.com/0x7375646F/Linuwu-Sense/issues/126) |
+| Nitro AN517-41, Predator PH315-54, Nitro AN515-54 / AN515-57 | **no** | **solo plausible**: sus autores no lo probaron en hardware | [PR 124](https://github.com/0x7375646F/Linuwu-Sense/pull/124), [PR 55](https://github.com/0x7375646F/Linuwu-Sense/pull/55), [PR 34](https://github.com/0x7375646F/Linuwu-Sense/pull/34) |
+| Nitro AN18-61 / ANV16S-41 / AN16S-61, Predator PHN16S-71 | **no, y no se van a anadir** | teclado ENE KB5130 por i2c-HID: el RGB **no va por WMI** | [issue 82](https://github.com/0x7375646F/Linuwu-Sense/issues/82) |
+
+Los cinco marcados como «confirmado por un tercero» son los unicos candidatos
+razonables a entrar en la tabla. No estan todavia porque aqui no hay forma de
+probarlos, y este proyecto no mete en su lista de compatibilidad cosas que no
+puede sostener. Si tienes uno de esos y lo pruebas, esa es la mejor
+contribucion posible.
+
 ---
 
 ## Instalacion
@@ -312,6 +471,27 @@ gnome-extensions enable nitro-gekko@thegekko.dev
 Lanza la aplicacion con `nitro-gekko`, desde el menu, o con el **boton del logo
 de la marca** del teclado (`preparar-sistema.sh` lo deja asignado).
 
+### Empaquetado para Arch (AUR)
+
+En [`packaging/aur/`](packaging/aur) hay un `PKGBUILD` que produce **tres
+paquetes desde un solo `pkgbase`**, y son tres a proposito:
+
+| Paquete | Que lleva |
+|---|---|
+| `nitro-gekko` | la aplicacion, el helper y la politica polkit |
+| `gnome-shell-extension-nitro-gekko` | solo la extension; funciona sin la aplicacion |
+| `linuwu-sense-an17-dkms` | el modulo DKMS **y la lista negra de `acer_wmi`** |
+
+El tercero esta separado porque es el unico que puede dejar un arranque sin
+ventiladores: tiene que ser una decision explicita, no un efecto colateral de
+instalar una aplicacion de escritorio. Su `.install` solo imprime el aviso de
+comprobar `dkms status linuwu-sense` **antes de reiniciar**; no carga ni
+descarga modulos, que es lo que dice la guia de DKMS de Arch.
+
+El `PKGBUILD` construye llamando al mismo `install.sh` con `DESTDIR`, `PREFIX` y
+`DIR_EXTENSIONES`, asi que no hay una segunda lista de ficheros que se pueda
+quedar desfasada.
+
 ### Que instala
 
 ```
@@ -332,9 +512,9 @@ permisos de ningun fichero de `/sys`**: siguen siendo `0644 root:root`.
 Cuando hay que escribir algo, la aplicacion llama por `pkexec` a un ayudante
 minusculo, `nitro-gekko-helper`, que corre como root. El helper **no acepta
 rutas**: solo un nombre de accion de una lista cerrada (`perfil`, `pl1`,
-`bateria`, `turbo`, `rgb_efecto`, `rgb_zonas`, `retro_timeout`, `usb_carga`,
-`calibracion`, `sonido_arranque`) y un valor que valida contra el propio
-kernel antes de escribirlo. La lista blanca de rutas vive dentro del helper.
+`bateria`, `bateria_ec`, `turbo`, `ventiladores`, `overdrive`, `rgb_efecto`,
+`rgb_zonas`, `retro_timeout`, `usb_carga`, `calibracion`, `sonido_arranque`) y
+un valor que valida contra el propio kernel antes de escribirlo. La lista blanca de rutas vive dentro del helper.
 
 Lo llama la aplicacion **y tambien la extension de GNOME Shell**: para los
 dos perfiles que `power-profiles-daemon` no conoce (`quiet` y
@@ -437,6 +617,81 @@ este equipo, en reposo:
 
 Es decir: `performance` casi **duplica el ruido** de `quiet` para ganar
 alrededor de 1 °C.
+
+## Control manual de los ventiladores
+
+Es la funcion que en Windows trae NitroSense, y **la unica de la aplicacion que
+puede empeorar el equipo si se usa mal**. La expone el mismo driver
+`linuwu_sense` en `nitro_sense/fan_speed`, con el formato `cpu,gpu` en por
+ciento.
+
+| Valor | Que hace |
+|---|---|
+| `0,0` | **automatico**: los lleva el EC segun la temperatura |
+| `100,100` | los dos al maximo |
+| `n,m` | velocidad fija en cada uno |
+
+La aplicacion **no deja poner menos de un 20 %** y no acepta un `0` suelto. Ese
+20 no es una medida, es una eleccion prudente, y esta dicho asi tanto aqui como
+en el comentario del helper. Para convertirlo en una medida hay un script que
+barre el porcentaje de arriba abajo anotando las RPM de cada escalon, y que
+**devuelve los ventiladores al automatico pase lo que pase**, incluido un
+Ctrl+C a mitad:
+
+```bash
+./packaging/medir-ventiladores.sh --revisar   # dice que haria, sin tocar nada
+sudo ./packaging/medir-ventiladores.sh        # ~3 min, hazlo con el equipo en reposo
+```
+
+El motivo del minimo es otro: por debajo de cierto punto el ventilador
+puede quedarse parado, y el sintoma —un portatil que se calienta y se limita
+solo— no apunta a ninguna causa. Un `0` en un solo campo significa para el driver
+«ese ventilador en automatico y el otro fijo», y el mismo digito no puede
+querer decir dos cosas en una interfaz privilegiada: o los dos, o ninguno.
+
+**Tres cosas que la interfaz dice y conviene repetir:**
+
+1. **Bajar la velocidad no puentea nada.** El PROCHOT/TCC del chip sigue ahi:
+   un porcentaje bajo con carga se traduce en calor y en que la CPU se limite
+   sola, no en dano.
+2. **Al automatico se vuelve por dos caminos.** Apagando el interruptor, o
+   poniendo el perfil en **Silencioso** o **Bajo consumo**: el propio driver
+   llama a `acer_set_fan_speed(0, 0)` al aplicar esos dos. Por eso la
+   aplicacion relee el estado cada segundo, para enterarse de un cambio que no
+   ha hecho ella.
+3. **No sobrevive a un reinicio.** El driver guarda el estado en
+   `/etc/predator_state` **al descargarse el modulo**, no al apagar, y lo
+   reaplica al cargarse: lo que reaparezca puede ser un valor viejo.
+
+## Overdrive del panel y limite de carga por el EC
+
+Dos cosas mas que el driver ya publicaba y que ahora estan en la interfaz.
+
+**Overdrive del panel** (`nitro_sense/lcd_override`). Acelera el cambio de color
+de los pixeles, a cambio de poder dejar estelas. La aplicacion **no promete
+ninguna cifra de tiempo de respuesta**: la de la ficha de Acer no es una medida
+de este equipo y no hay lectura de software que la confirme. Lo unico que si se
+comprueba es que el atributo relee lo que se le escribe. Si devuelve algo que no
+sea `0` ni `1`, la fila sale **desactivada diciendo que no se sabe**, nunca
+apagada.
+
+**Limite de carga al 80 %.** Hay dos caminos para lo mismo y la aplicacion elige
+solo:
+
+| Fuente | Ruta | Coste de lectura | Cuando se usa |
+|---|---|---|---|
+| Modulo DKMS del AUR | `acer-wmi-battery/health_mode` | **0,006 ms** | siempre que este |
+| El propio `linuwu_sense` | `nitro_sense/battery_limiter` | **4,888 ms** (WMI) | solo si no esta el otro |
+
+Medido en este equipo, mediana de 25 lecturas. El del modulo DKMS gana porque es
+una variable suya y cabe en el ciclo de 1 Hz; el del EC es una llamada WMI real
+y va al ciclo de 10 s. Y si estando los dos se escribiera por el del EC, el
+modulo DKMS se quedaria con su copia desfasada para siempre.
+
+**Lo que cambia esto para quien instala:** `acer-wmi-battery` pasa de ser
+necesario para el limite de carga a ser **recomendado**. Sin el, el limite
+sigue funcionando por el EC; lo que se pierde es **la temperatura de la
+bateria**, que la publica ese modulo y no el EC.
 
 ## Teclado RGB de 4 zonas
 
@@ -559,6 +814,89 @@ en *Configuracion > Teclado > Atajos personalizados* con el comando
 
 ---
 
+## El sonido: el DTS:X Ultra que traia Windows
+
+La ficha oficial de este portatil (SKU AN17-51-74WP) promete *«DTS: X(R) Ultra
+audio, Acer Purified, Acer TrueHarmony»* y **dos altavoces de 2 W**. En Windows
+eso se nota; en Linux no esta, y conviene saber por que, porque es una pregunta
+que se repite.
+
+**DTS:X Ultra no es hardware.** Es un *APO* (Audio Processing Object) de
+Windows: un objeto COM que corre **en modo usuario** y que el motor de audio de
+Windows inyecta en la cadena, instalado junto al driver Realtek. La
+documentacion de Microsoft lo dice con todas las letras: *«All of the APOs are
+COM based and run in user mode... none of the effects are running in hardware or
+in kernel mode»*.
+
+De ahi salen las tres consecuencias que importan aqui:
+
+- **No hay nada que portar al modulo del kernel.** `linuwu_sense` son 4620
+  lineas y no tiene una sola de audio: lo unico que roza el sonido es el pitido
+  de arranque (`boot_animation_sound`), que la aplicacion **ya expone**.
+- **No hay DSP donde meterlo.** SOF (el DSP de audio de Intel) no tiene modulo
+  DTS en su fuente, y la topologia que carga este equipo
+  (`sof-hda-generic-2ch.tplg`) **no tiene ni un ecualizador en el camino de
+  reproduccion**: su unico `EQIIR` cuelga de la tuberia de captura. Los unicos
+  controles de reproduccion del DSP son ganancias.
+- **Tampoco hay volumen escondido.** El codec es un Realtek ALC245 sin
+  amplificador inteligente (ni `cs35l41`, ni `tas27xx`, ni `max98xxx`), y el
+  amplificador de salida ya esta al maximo de fabrica (`Amp-Out vals: [0x57
+  0x57]` de `nsteps=0x57`). No hay ningun quirk que aplicar.
+
+### Lo que si hay: EasyEffects
+
+El equivalente honesto es **EasyEffects sobre PipeWire**, que hace el mismo
+trabajo (ecualizador, realce de graves, compresion multibanda, limitador) y lo
+hace mejor que cualquier pestana que se anadiera aqui. Es otra aplicacion, y
+esta bien que lo sea: **Nitro Gekko no lleva pestana de audio y no la va a
+llevar**.
+
+Lo que si trae este repositorio son tres presets de EasyEffects pensados para
+dos altavoces pequenos, en [`extras/audio/`](extras/audio):
+
+| Preset | Para que |
+|---|---|
+| `Nitro Gekko - Musica` | equilibrado, sin ensanchado |
+| `Nitro Gekko - Pelicula` | dialogo por delante, escenario algo mas ancho |
+| `Nitro Gekko - Juego` | pasos y direccion, escenario ancho |
+
+```bash
+cp extras/audio/'Nitro Gekko - '*.json ~/.local/share/easyeffects/output/
+```
+
+y luego elegirlos en EasyEffects, en **Presets**. Se regeneran con
+`python3 extras/audio/generar-presets.py`, que escribe la curva a partir de una
+tabla legible en vez de a mano.
+
+> **Estas curvas NO estan medidas**, y es la unica cosa de este repositorio de
+> la que se dice eso. Todo lo demas que se afirma aqui viene de una medicion;
+> esto no: no hay microfono de medicion. Son un punto de partida razonado —por
+> debajo de 100 Hz un altavoz de 2 W no da nada, asi que el grave se sugiere con
+> armonicos en vez de subir la banda— y se espera que los retoques.
+
+### Como convive con lo que ya tengas
+
+**Un solo procesador de audio, y ya lo tienes.** El riesgo real no es que Nitro
+Gekko se pelee con EasyEffects: es apilar dos capas de proceso (por ejemplo un
+`filter-chain` de PipeWire encima de EasyEffects), que suma ganancias, satura y
+deja un sonido peor que sin nada. Por eso aqui **no se instala ningun DSP**:
+solo se dejan unos ficheros de preset, que son el propio EasyEffects.
+
+Tres cosas que conviene revisar en EasyEffects, y que no tienen que ver con este
+repositorio pero explican el 90 % de los «no noto nada»:
+
+1. **A que dispositivo esta apuntando.** EasyEffects procesa el dispositivo que
+   tiene seleccionado; si esta fijado a unos auriculares Bluetooth, los
+   altavoces del portatil salen **sin procesar**. Se ve en la pestana de salida,
+   y se puede dejar en «usar el dispositivo por defecto».
+2. **La autocarga por dispositivo.** En *Presets* hay una pestana de autocarga:
+   ahi se ata un preset a cada salida (el de altavoces al altavoz, el tuyo de
+   auriculares al Bluetooth) y deja de haber que cambiarlo a mano.
+3. **Un solo preset activo.** Cargar uno de estos **sustituye** al que
+   tuvieras; no se suman. Volver al anterior es elegirlo otra vez.
+
+---
+
 ## Seguridad y permisos
 
 Nitro Gekko necesita escribir en ficheros de `/sys` que son `0644 root:root`.
@@ -605,7 +943,7 @@ Piezas: `packaging/nitro-gekko-helper` va a
 Al helper lo invocan **dos piezas, no una**: la aplicacion y tambien la
 extension de GNOME Shell, para los dos perfiles que `power-profiles-daemon` no
 conoce. Es el mismo ejecutable, la misma accion y la misma interfaz cerrada, y
-de las diez acciones la extension solo usa `perfil`. Lo que si conviene tener
+de las trece acciones la extension solo usa `perfil`. Lo que si conviene tener
 presente es que **la cache de `auth_admin_keep` la comparten las dos**:
 autorizar desde Configuracion rapida deja tambien a la aplicacion sin dialogo
 durante esos minutos.
@@ -624,7 +962,7 @@ cualquier proceso del usuario (una pestana del navegador, un juego, un
 usuario no podia saber que ruta se iba a tocar mirando el dialogo.
 
 Hoy lo unico que cruza la frontera de privilegio son **dos cadenas**: un nombre
-de accion de un conjunto cerrado de diez, y un valor. Las rutas son constantes
+de accion de un conjunto cerrado de trece, y un valor. Las rutas son constantes
 del propio fichero del helper.
 
 | Accion | Ruta (constante en el helper) | Valores aceptados |
@@ -632,7 +970,10 @@ del propio fichero del helper.
 | `perfil` | `/sys/firmware/acpi/platform_profile` | uno de los que lista el kernel en `platform_profile_choices` |
 | `pl1` | `intel-rapl:0` y `intel-rapl-mmio:0` `constraint_0_power_limit_uw` | entero decimal 10..65 (vatios) |
 | `bateria` | `acer-wmi-battery/health_mode` | `0` o `1` |
+| `bateria_ec` | `acer-wmi/nitro_sense/battery_limiter` | `0` o `1` |
 | `turbo` | `intel_pstate/no_turbo` | `0` o `1` |
+| `ventiladores` | `acer-wmi/nitro_sense/fan_speed` | `0,0` (automatico) o los dos entre 20 y 100 |
+| `overdrive` | `acer-wmi/nitro_sense/lcd_override` | `0` o `1` |
 | `rgb_efecto` | `acer-wmi/four_zoned_kb/four_zone_mode` | `modo,vel,brillo,dir,R,G,B` con rango por campo |
 | `rgb_zonas` | `acer-wmi/four_zoned_kb/per_zone_mode` | 4 colores `RRGGBB` + brillo 0..100 |
 | `retro_timeout` | `acer-wmi/nitro_sense/backlight_timeout` | `0` o `1` |
@@ -719,7 +1060,7 @@ aviso de error con el 126.
 
 Lo que **no** cubre: el dialogo es de grano grueso. Una accion polkit se
 resuelve por ejecutable, asi que hay una sola, y quien autoriza «cambiar el
-perfil» esta autorizando, mientras dure la cache, cualquiera de las diez
+perfil» esta autorizando, mientras dure la cache, cualquiera de las trece
 acciones. Por eso el `<message>` de la politica enumera el alcance entero. Lo
 que se puede hacer con esa ventana esta acotado por la tabla de acciones:
 ruido, rendimiento y desgaste de bateria. Ninguna accion da una shell, escribe
@@ -1146,10 +1487,23 @@ parrafo de «por que» dentro del codigo.
    arranques; la bateria se elige por contenido (`type=Battery` y
    `scope != Device`), porque si no la aplicacion acaba ensenando la bateria de
    un raton inalambrico (comprobado: `hidpp_battery_0`, 58 %).
-9. **No se mete `leer_teclado()` ni ninguna lectura de
-   `/sys/devices/platform/acer-wmi/*` en el bucle de 1 Hz.** Cuestan entre 5 y
-   53 ms de WMI real y ademas son las que hacen mentir a las lecturas de perfil
-   de la extension.
+9. **Ninguna lectura de `/sys/devices/platform/acer-wmi/*` entra en el bucle de
+   1 Hz sin medirla antes.** Casi todas son llamadas WMI reales al firmware, y
+   ademas son las que hacen mentir a las lecturas de perfil de la extension.
+   Medido aqui (mediana de 25 lecturas):
+
+   | Atributo | Coste | Donde va |
+   |---|---|---|
+   | `fan_speed` | **0,007 ms** | ciclo de 1 Hz: no es WMI, el driver devuelve dos variables suyas |
+   | `battery_limiter` | 4,888 ms | ciclo de 10 s, y solo si no esta el modulo DKMS |
+   | `lcd_override` | 5,229 ms | bajo demanda, nunca en un temporizador |
+   | `usb_charging` | 6,775 ms | dentro de `leer_teclado()`, bajo demanda |
+   | `leer_teclado()` entero | 47 a 53 ms | al abrir la pagina y tras cada cambio |
+
+   `fan_speed` es la unica excepcion y ademas **tiene** que estar a 1 Hz: el
+   propio driver devuelve los ventiladores al automatico al pasar el perfil a
+   Silencioso o Bajo consumo, asi que la interfaz se entera de un cambio que no
+   ha hecho ella.
 10. **No se toca `rgb/src/linuwu_sense.c` sin conservar sus dos parches**
     (el quirk del AN17-51 con `.four_zone_kb=1` y su entrada DMI, y los tres
     `strncpy()` -> `memcpy()`). Traer el fuente del upstream tal cual es la
@@ -1399,6 +1753,8 @@ No es una lista de tareas pendientes. Es una lista de cosas decididas:
 | | Por que no |
 |---|---|
 | Vatios de CPU en vivo | `energy_uj` esta cerrado por la mitigacion de PLATYPUS y no se va a abrir |
+| Una pestana de audio, o «DTS» | DTS:X Ultra es un APO de Windows en modo usuario: no hay nada en firmware, ni en el EC, ni en WMI, ni en `linuwu_sense`. Duplicar un ecualizador seria un EasyEffects peor. Ver [El sonido](#el-sonido-el-dtsx-ultra-que-traia-windows) |
+| Entradas DMI de modelos que nadie ha probado | convierte la tabla de compatibilidad en una promesa que el proyecto no puede sostener. Ver [Que se sabe de cada modelo](#que-se-sabe-de-cada-modelo) |
 | Calibracion de bateria en la interfaz | horas de descarga y recarga; no puede estar a un clic |
 | `--con-udev` por defecto | quita la validacion del helper y abre seis rutas a cualquier proceso del usuario |
 | Un demonio D-Bus con polkit por metodo | anadiria un proceso privilegiado permanente para ganar granularidad que hoy no hace falta |
@@ -1427,6 +1783,24 @@ git status --short               # y no debe aparecer ningun .md nuevo
 Y si escribes algo aqui que remita a un fichero local, dilo con esa palabra
 —«en la copia local»— para que quien lo lea desde GitHub no busque un fichero
 que no le ha llegado.
+
+---
+
+## Si algo no funciona
+
+Antes de abrir nada, dos atajos que resuelven la mayoria de los casos:
+
+- **Tu Acer no es un AN17-51:** [Anade tu modelo](#anade-tu-modelo). Casi todo
+  se arregla forzando el quirk por parametro de modulo, sin recompilar.
+- **Te has quedado sin perfiles ni ventiladores:** [El riesgo real de este paso,
+  dicho claro](#el-riesgo-real-de-este-paso-dicho-claro). Son dos ordenes, y
+  estan escritas dentro del propio `/etc/modprobe.d/nitro-gekko-rgb.conf`.
+
+Si aun asi hace falta, las [plantillas de
+incidencia](.github/ISSUE_TEMPLATE) piden de entrada lo que siempre hay que
+preguntar: la salida de `./packaging/preparar-sistema.sh --revisar`, tu cadena
+DMI, el kernel, la version de GNOME y `dkms status`. Con eso se puede empezar;
+sin eso, no.
 
 ---
 

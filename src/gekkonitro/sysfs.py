@@ -91,6 +91,22 @@ RETRO_TIMEOUT = ACER_WMI / "nitro_sense" / "backlight_timeout"
 USB_CARGA = ACER_WMI / "nitro_sense" / "usb_charging"
 SONIDO_ARRANQUE = ACER_WMI / "nitro_sense" / "boot_animation_sound"
 
+#: Velocidad manual de los ventiladores, "cpu,gpu" en por ciento.  0,0 es
+#: AUTOMATICO (manda el EC), que es tambien la vuelta atras.
+#:
+#: OJO, es la excepcion del grupo: cuesta 0,007 ms (mediana de 25 lecturas),
+#: no 5 ms como sus vecinos, porque el driver devuelve dos variables suyas en
+#: vez de preguntarle al firmware.  Por eso ESTA si cabe en el ciclo de 1 Hz.
+VENTILADORES = ACER_WMI / "nitro_sense" / "fan_speed"
+
+#: Overdrive del panel.  Lectura de 5,2 ms: WMI de verdad, solo bajo demanda.
+OVERDRIVE = ACER_WMI / "nitro_sense" / "lcd_override"
+
+#: Limite de carga POR EL EC, el equivalente de HEALTH_MODE sin depender del
+#: modulo del AUR.  Lectura de 4,9 ms (WMI) frente a los 0,006 ms de
+#: HEALTH_MODE: ver fuente_limite_carga().
+BAT_LIMITER = ACER_WMI / "nitro_sense" / "battery_limiter"
+
 # battery_calibration existe en el driver y el helper la acepta, pero la
 # aplicacion NO la expone ni la lee: arrancar un ciclo de calibracion descarga
 # y recarga la bateria entera durante horas, y no es algo que deba quedar a un
@@ -197,6 +213,10 @@ class EstadoRapido:
     bat_estado: str | None = None
     health_mode: bool | None = None
     freq_media_mhz: float | None = None
+    #: Velocidad manual de los ventiladores en por ciento, o None si el driver
+    #: no la expone.  (0, 0) significa automatico, no "parados".
+    fan_cpu_pct: int | None = None
+    fan_gpu_pct: int | None = None
     #: Coste real de esta lectura, en milisegundos.  NO se muestra en la
     #: interfaz: esta para poder medir el bucle desde una consola sin tener que
     #: instrumentar nada, y es lo que respalda los numeros de la cabecera.
@@ -209,6 +229,10 @@ class EstadoLento:
 
     perfil: str | None = None
     temp_bateria: float | None = None
+    #: Limite de carga leido POR EL EC.  Solo se rellena cuando esa es la
+    #: fuente (ver fuente_limite_carga()): cuesta 4,9 ms de WMI y por eso no
+    #: esta en el ciclo rapido, donde si esta el health_mode del modulo DKMS.
+    limite_carga_ec: bool | None = None
     #: Igual que en EstadoRapido: medicion interna, no se muestra.
     coste_ms: float = 0.0
 
@@ -487,16 +511,70 @@ class ControlNitro:
         if crudo is not None:
             est.health_mode = bool(crudo)
 
+        # Velocidad manual de los ventiladores.  Cabe aqui, y solo ella de todo
+        # /sys/devices/platform/acer-wmi/: 0,007 ms medidos (mediana de 25),
+        # porque el driver devuelve dos variables suyas sin llamar al firmware.
+        # Sus vecinas del mismo directorio cuestan 5 ms de WMI y no caben.
+        #
+        # Y tiene que estar a 1 Hz: el propio driver devuelve los ventiladores
+        # al automatico cuando el perfil pasa a 'quiet' o 'low-power'
+        # (linuwu_sense.c, acer_set_fan_speed(0,0)), asi que la interfaz se
+        # entera sola de un cambio que no ha hecho ella.
+        texto = _leer_texto(VENTILADORES)
+        if texto is not None:
+            partes = texto.split(",")
+            if len(partes) == 2:
+                try:
+                    est.fan_cpu_pct = int(partes[0])
+                    est.fan_gpu_pct = int(partes[1])
+                except ValueError:
+                    pass
+
         est.freq_media_mhz = self._frecuencia_media()
 
         est.coste_ms = (time.perf_counter() - inicio) * 1000.0
         return est
+
+    def fuente_limite_carga(self) -> str | None:
+        """De donde sale el limite de carga al 80 %: "dkms", "ec" o None.
+
+        HAY DOS CAMINOS PARA LO MISMO Y EL ORDEN NO ES ARBITRARIO
+        ---------------------------------------------------------
+        - "dkms": ``acer-wmi-battery/health_mode``, del modulo del AUR.
+        - "ec":   ``nitro_sense/battery_limiter``, del propio linuwu_sense.
+
+        Se prefiere SIEMPRE el del modulo DKMS cuando existe, por dos motivos
+        medidos en esta maquina (mediana de 25 lecturas):
+
+            health_mode      0,006 ms   <- variable del modulo
+            battery_limiter  4,888 ms   <- llamada WMI real al firmware
+
+        El primero cabe en el ciclo de 1 Hz; el segundo, no. Y ademas, si
+        estando los dos escribieramos por ``battery_limiter``, el modulo DKMS
+        se quedaria con su copia desfasada para siempre.
+
+        Sin el modulo del AUR ya no se pierde la funcion, que era lo que pasaba
+        antes: se pierde solo la temperatura de la bateria, que la publica ese
+        mismo modulo y no el EC.
+        """
+        if HEALTH_MODE.exists():
+            return "dkms"
+        if BAT_LIMITER.exists():
+            return "ec"
+        return None
 
     def leer_lento(self) -> EstadoLento:
         """Ciclo de 0,1 Hz.  Agrupa las lecturas ACPI/WMI caras (~10 ms)."""
         inicio = time.perf_counter()
         est = EstadoLento()
         est.perfil = self.perfil_actual()
+        # Solo cuando el limite de carga lo lleva el EC: son 4,9 ms de WMI y
+        # por eso no esta en el ciclo rapido.  Con el modulo DKMS instalado
+        # esta lectura no se hace nunca.
+        if self.fuente_limite_carga() == "ec":
+            crudo = _leer_int(BAT_LIMITER)
+            if crudo is not None:
+                est.limite_carga_ec = bool(crudo)
         crudo = _leer_int(TEMP_BATERIA)
         if crudo is not None:
             # 33000 son 33,0 C: es simplemente /1000.  La formula (v-2731)*100
@@ -553,8 +631,15 @@ class ControlNitro:
 
     @staticmethod
     def hay_salud_bateria() -> bool:
-        """¿Esta cargado el DKMS acer-wmi-battery?"""
-        return HEALTH_MODE.exists()
+        """¿Hay limite de carga al 80 %, venga de donde venga?
+
+        Antes esto era «¿esta cargado el DKMS acer-wmi-battery?», y con eso la
+        fila salia en gris en cualquier equipo sin ese modulo del AUR.  Pero
+        linuwu_sense publica lo mismo en ``nitro_sense/battery_limiter``, asi
+        que basta con que exista UNA de las dos.  Cual se usa lo decide
+        ``fuente_limite_carga()``, que prefiere el DKMS por coste.
+        """
+        return HEALTH_MODE.exists() or BAT_LIMITER.exists()
 
     # -- escrituras ---------------------------------------------------------
 
@@ -584,7 +669,7 @@ class ControlNitro:
         argumento, y eso era un agujero de escalada de privilegios: cualquier
         proceso que corriese como el usuario podia pedirle que escribiera como
         root en cualquier fichero.  Ahora cruza la frontera de privilegio solo
-        un NOMBRE DE ACCION de un conjunto cerrado de diez («perfil»,
+        un NOMBRE DE ACCION de un conjunto cerrado de trece («perfil»,
         «pl1», «bateria», «turbo», «rgb_efecto», «rgb_zonas»,
         «retro_timeout», «usb_carga», «calibracion», «sonido_arranque») y su
         valor; la lista blanca de rutas vive dentro del helper.  Si una
@@ -818,9 +903,15 @@ class ControlNitro:
         else:
             etiqueta = "el limite de carga de la bateria"
             exito = "Limite de carga desactivado: la bateria cargara al 100 %."
+        # La ruta y la accion dependen de quien publique la funcion en este
+        # equipo; ver fuente_limite_carga().
+        if self.fuente_limite_carga() == "ec":
+            ruta, accion = BAT_LIMITER, "bateria_ec"
+        else:
+            ruta, accion = HEALTH_MODE, "bateria"
         return self._escribir(
-            HEALTH_MODE, "1" if activar else "0", etiqueta, exito=exito,
-            accion="bateria", al_terminar=al_terminar,
+            ruta, "1" if activar else "0", etiqueta, exito=exito,
+            accion=accion, al_terminar=al_terminar,
         )
 
     def escribir_no_turbo(
@@ -944,6 +1035,97 @@ class ControlNitro:
             ruta, valor, f"el estilo «{nombre}»",
             exito=f"Estilo «{nombre}» aplicado.",
             accion=accion, valor_helper=valor, al_terminar=al_terminar,
+        )
+
+    # ----------------------------------------------------------------------
+    # Ventiladores y panel (driver linuwu_sense, grupo nitro_sense)
+    #
+    # Estan aqui y no con el teclado porque no tienen nada que ver con el RGB:
+    # un Acer puede exponer nitro_sense sin four_zoned_kb.
+    # ----------------------------------------------------------------------
+
+    #: Minimo por ciento que la aplicacion deja poner a mano.  Tiene que ser el
+    #: mismo FAN_MIN_PCT que el helper, o la interfaz ofreceria un valor que el
+    #: helper rechaza con codigo 2.  NO es una medida: es una eleccion
+    #: prudente, y esta explicada en packaging/nitro-gekko-helper.
+    FAN_MIN_PCT = 20
+
+    def hay_ventiladores_manuales(self) -> bool:
+        """True si el driver deja fijar la velocidad de los ventiladores."""
+        return VENTILADORES.exists()
+
+    def escribir_ventiladores(
+        self, cpu: int | None, gpu: int | None,
+        al_terminar: Callable[[Resultado], None] | None = None,
+    ) -> Resultado:
+        """Velocidad manual de los ventiladores, o automatico.
+
+        ``cpu`` y ``gpu`` en por ciento, o los DOS None para devolverselos al
+        EC.  Un 0 suelto en un campo significaria para el driver "ese
+        ventilador en automatico y el otro fijo", y esa ambiguedad no se
+        expone: o los dos, o ninguno.
+
+        LO QUE HAY QUE SABER ANTES DE USAR ESTO
+        ---------------------------------------
+        1. El automatico se recupera SIEMPRE, y por dos caminos: desde aqui con
+           ``escribir_ventiladores(None, None)``, o poniendo el perfil termico
+           en Silencioso o Bajo consumo, porque el propio driver llama a
+           ``acer_set_fan_speed(0, 0)`` al aplicarlos.
+        2. NO sobrevive a un reinicio.  El driver guarda el estado en
+           ``/etc/predator_state`` al DESCARGARSE el modulo, no al apagar, y lo
+           reaplica al cargarse: o sea que lo que reaparece puede ser un valor
+           viejo, no el ultimo que pusiste.
+        3. Bajar la velocidad no puentea nada: el PROCHOT/TCC del propio chip
+           sigue estando, asi que un porcentaje bajo con carga se traduce en
+           calor y en que la CPU se limite sola, no en dano.
+        """
+        if cpu is None and gpu is None:
+            return self._escribir(
+                VENTILADORES, "0,0", "los ventiladores",
+                exito="Ventiladores en automatico: los lleva el EC.",
+                accion="ventiladores", al_terminar=al_terminar,
+            )
+        if cpu is None or gpu is None:
+            return Resultado(False, "Los dos ventiladores se ponen a la vez, o ninguno.")
+        for valor, cual in ((cpu, "CPU"), (gpu, "GPU")):
+            if not (self.FAN_MIN_PCT <= valor <= 100):
+                return Resultado(
+                    False,
+                    f"La velocidad del ventilador de {cual} tiene que estar entre "
+                    f"{self.FAN_MIN_PCT} y 100 %.",
+                )
+        return self._escribir(
+            VENTILADORES, f"{cpu},{gpu}", "los ventiladores",
+            exito=f"Ventiladores fijados: CPU {cpu} %, GPU {gpu} %.",
+            accion="ventiladores", al_terminar=al_terminar,
+        )
+
+    def hay_overdrive(self) -> bool:
+        """True si el driver expone el overdrive del panel."""
+        return OVERDRIVE.exists()
+
+    def leer_overdrive(self) -> int | None:
+        """Overdrive del panel: 0, 1, o None si no se puede saber.
+
+        Se lee BAJO DEMANDA y nunca desde un temporizador: cuesta 5,2 ms
+        (mediana de 25 lecturas), que es una llamada WMI real al firmware.
+        """
+        return _leer_int(OVERDRIVE)
+
+    def escribir_overdrive(
+        self, activo: bool, al_terminar: Callable[[Resultado], None] | None = None
+    ) -> Resultado:
+        """Overdrive del panel.
+
+        Lo que hace de verdad esta en el firmware y la aplicacion no lo puede
+        comprobar: lo unico que si se comprueba es que el atributo relee lo que
+        le escribimos.  Por eso la interfaz no promete ninguna cifra de tiempo
+        de respuesta: la de la ficha de Acer no es una medida de este equipo.
+        """
+        exito = "Overdrive del panel activado." if activo else "Overdrive del panel desactivado."
+        return self._escribir(
+            OVERDRIVE, "1" if activo else "0", "el overdrive del panel",
+            exito=exito, accion="overdrive", al_terminar=al_terminar,
         )
 
     def escribir_retro_timeout(

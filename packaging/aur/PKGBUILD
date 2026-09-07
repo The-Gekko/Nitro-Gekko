@@ -1,0 +1,73 @@
+# Maintainer: The Gekko <harbin at betancourt dot dev>
+
+pkgbase=nitro-gekko
+pkgname=('nitro-gekko' 'gnome-shell-extension-nitro-gekko' 'linuwu-sense-an17-dkms')
+pkgver=1.0.0
+pkgrel=1
+arch=('any')
+url="https://github.com/The-Gekko/Nitro-Gekko"
+license=('GPL-3.0-or-later')
+makedepends=('python' 'libxml2' 'polkit')
+source=("$pkgbase-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "nitro-gekko-rgb.conf")
+sha256sums=('RELLENAR-CON-updpkgsums'
+            'RELLENAR-CON-updpkgsums')
+
+_uuid='nitro-gekko@thegekko.dev'
+_src="Nitro-Gekko-$pkgver"
+
+package_nitro-gekko() {
+  pkgdesc="Panel de control GTK4/libadwaita del Acer Nitro AN17-51 (perfil termico, ventiladores, PL1, bateria, teclado RGB)"
+  depends=('python' 'python-gobject' 'gtk4' 'libadwaita' 'polkit' 'hicolor-icon-theme')
+  optdepends=('gnome-shell-extension-nitro-gekko: cambiar el perfil desde Configuracion rapida'
+              'linuwu-sense-an17-dkms: teclado RGB de 4 zonas'
+              'acer-wmi-battery-dkms-git: limite de carga de bateria al 80 %'
+              'power-profiles-daemon: cambiar tres de los cinco perfiles sin contrasena'
+              'nvidia-utils: lecturas de la GPU (nvidia-smi)')
+
+  cd "$srcdir/$_src"
+  # install.sh instala la app Y la extension; la extension va en su propio
+  # paquete, asi que aqui se manda a un sitio y se borra despues.
+  DESTDIR="$pkgdir" PREFIX=/usr \
+  DIR_EXTENSIONES=/usr/share/gnome-shell/extensions \
+    ./packaging/install.sh
+  rm -rf "$pkgdir/usr/share/gnome-shell"
+
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}
+
+package_gnome-shell-extension-nitro-gekko() {
+  pkgdesc="Perfil termico y RPM del Acer Nitro AN17-51 en Configuracion rapida de GNOME Shell"
+  depends=('gnome-shell')
+  optdepends=('nitro-gekko: la aplicacion completa y el helper privilegiado')
+
+  cd "$srcdir/$_src"
+  install -Dm644 extension/extension.js    "$pkgdir/usr/share/gnome-shell/extensions/$_uuid/extension.js"
+  install -Dm644 extension/metadata.json   "$pkgdir/usr/share/gnome-shell/extensions/$_uuid/metadata.json"
+  install -Dm644 extension/stylesheet.css  "$pkgdir/usr/share/gnome-shell/extensions/$_uuid/stylesheet.css"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+}
+
+package_linuwu-sense-an17-dkms() {
+  pkgdesc="linuwu_sense parcheado para el Acer Nitro AN17-51 (teclado RGB de 4 zonas), por DKMS"
+  license=('GPL-2.0-or-later')
+  depends=('dkms')
+  conflicts=('linuwu-sense-dkms' 'linuwu-sense-dkms-git')
+  install="linuwu-sense-an17.install"
+
+  cd "$srcdir/$_src"
+  # Nombre y version se LEEN de rgb/dkms.conf, no se cablean: es la misma
+  # comprobacion que hace packaging/instalar-rgb.sh.
+  local _n _v
+  _n="$(sed -n 's/^PACKAGE_NAME="\(.*\)"$/\1/p'    rgb/dkms.conf | head -1)"
+  _v="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' rgb/dkms.conf | head -1)"
+  install -d "$pkgdir/usr/src/${_n}-${_v}"
+  cp -r rgb/src rgb/Makefile rgb/dkms.conf "$pkgdir/usr/src/${_n}-${_v}/"
+  find "$pkgdir/usr/src/${_n}-${_v}" -type d -exec chmod 755 {} +
+  find "$pkgdir/usr/src/${_n}-${_v}" -type f -exec chmod 644 {} +
+
+  install -Dm644 "$srcdir/nitro-gekko-rgb.conf" "$pkgdir/usr/lib/modprobe.d/nitro-gekko-rgb.conf"
+  echo linuwu_sense | install -Dm644 /dev/stdin "$pkgdir/usr/lib/modules-load.d/linuwu-sense.conf"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+}
