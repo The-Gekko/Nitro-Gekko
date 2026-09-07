@@ -82,6 +82,16 @@ AVISO_VENTILADORES = (
     "modulo, no al apagar, asi que lo que reaparezca puede ser un valor viejo."
 )
 
+#: Subtitulo de la fila de control manual, segun como este.  Son dos porque uno
+#: solo describia siempre el mismo estado: con el interruptor encendido seguia
+#: diciendo «Apagado: los lleva el EC», o sea justo lo contrario de lo que
+#: pasaba.  Una fila que afirma lo que no es no sirve de nada.
+FAN_MANUAL_APAGADO = "Apagado: los lleva el EC segun la temperatura."
+FAN_MANUAL_ENCENDIDO = (
+    "Encendido: giran al porcentaje que pongas. Vuelve solo al automatico si "
+    "pasas el perfil a Silencioso o Bajo consumo."
+)
+
 #: Subtitulo cuando el driver no publica la velocidad de los ventiladores.
 AYUDA_SIN_VENTILADORES = (
     "No disponible: hace falta el driver linuwu_sense, que instala "
@@ -444,7 +454,7 @@ class VentanaNitro(Adw.ApplicationWindow):
 
         self._sw_fan_manual = Adw.SwitchRow(
             title="Control manual",
-            subtitle="Apagado: los lleva el EC segun la temperatura.",
+            subtitle=FAN_MANUAL_APAGADO,
         )
         self._sw_fan_manual.set_subtitle_lines(3)
         icono_aviso = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
@@ -883,6 +893,10 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._hw_fan_manual = manual
         self._hw_fan_cpu, self._hw_fan_gpu = (cpu, gpu) if manual else (None, None)
         self._sw_fan_manual.set_active(manual)
+        if self._hay_fan_manual:
+            self._sw_fan_manual.set_subtitle(
+                FAN_MANUAL_ENCENDIDO if manual else FAN_MANUAL_APAGADO
+            )
         for spin in (self._spin_fan_cpu, self._spin_fan_gpu):
             spin.set_sensitive(manual)
         # Solo se pisa el valor del usuario si NO lo esta tocando.  Con
