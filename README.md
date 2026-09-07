@@ -882,18 +882,40 @@ Gekko se pelee con EasyEffects: es apilar dos capas de proceso (por ejemplo un
 deja un sonido peor que sin nada. Por eso aqui **no se instala ningun DSP**:
 solo se dejan unos ficheros de preset, que son el propio EasyEffects.
 
-Tres cosas que conviene revisar en EasyEffects, y que no tienen que ver con este
-repositorio pero explican el 90 % de los «no noto nada»:
+**EasyEffects procesa UN dispositivo cada vez.** Si esta fijado a unos
+auriculares Bluetooth, los altavoces del portatil salen sin procesar, y al
+reves. La solucion es atar un preset a cada salida, y para eso hay un ayudante
+que lee los dispositivos de PipeWire y escribe la regla:
 
-1. **A que dispositivo esta apuntando.** EasyEffects procesa el dispositivo que
-   tiene seleccionado; si esta fijado a unos auriculares Bluetooth, los
-   altavoces del portatil salen **sin procesar**. Se ve en la pestana de salida,
-   y se puede dejar en «usar el dispositivo por defecto».
-2. **La autocarga por dispositivo.** En *Presets* hay una pestana de autocarga:
-   ahi se ata un preset a cada salida (el de altavoces al altavoz, el tuyo de
-   auriculares al Bluetooth) y deja de haber que cambiarlo a mano.
-3. **Un solo preset activo.** Cargar uno de estos **sustituye** al que
-   tuvieras; no se suman. Volver al anterior es elegirlo otra vez.
+```bash
+python3 extras/audio/autocarga-easyeffects.py --listar
+python3 extras/audio/autocarga-easyeffects.py \
+    --sink alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Speaker__sink \
+    --preset 'Nitro Gekko - Musica'
+```
+
+Existe porque **el formato de esas reglas no esta documentado en ninguna
+parte**, y las dos cosas que hay que saber se sacaron leyendo el fuente de
+EasyEffects:
+
+- El fichero se llama `<dispositivo>:<ruta>.json`, y `<ruta>` **no** es el
+  perfil de la tarjeta ni el nombre del puerto: es la **descripcion** de la
+  ruta (`stream_output_effects.cpp` pasa `node.device_route_description`). En un
+  escritorio en espanol eso es literalmente `Auriculares` o `Speaker`. **Si
+  cambias el idioma del sistema, la regla deja de casar** y hay que rehacerla.
+- Las tres llamadas a la autocarga estan dentro de un
+  `if (node.name == DbStreamOutputs::outputDevice())`. O sea que **solo se
+  dispara para el dispositivo que EasyEffects tiene como salida**: con un
+  dispositivo fijado no se disparara nunca al cambiar a otro. Hay que dejar
+  activado **«usar el dispositivo por defecto»**.
+
+Comprobado en esta maquina cambiando la salida por defecto y mirando que preset
+quedaba cargado: a los altavoces entra `Nitro Gekko - Musica`, y al volver a los
+auriculares Bluetooth vuelve el preset que ya habia. El ayudante avisa solo si
+detecta que falta lo de «usar el dispositivo por defecto».
+
+Y una obviedad que no lo es: **solo hay un preset activo**. Cargar uno
+**sustituye** al anterior, no se suman.
 
 ---
 
