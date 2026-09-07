@@ -885,8 +885,13 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._sw_fan_manual.set_active(manual)
         for spin in (self._spin_fan_cpu, self._spin_fan_gpu):
             spin.set_sensitive(manual)
-        if manual and not (self._spin_fan_cpu.has_focus() or self._spin_fan_gpu.has_focus()):
-            # Solo se pisa el valor del usuario si no lo esta tecleando.
+        # Solo se pisa el valor del usuario si NO lo esta tocando.  Con
+        # has_focus() sobre la fila esto no funcionaba (devuelve False siempre,
+        # el foco lo tiene el GtkText de dentro) y el tic pisaba el valor a
+        # medio bajar; ver _en_edicion().
+        pendiente = self._id_fan is not None
+        if manual and not (self._en_edicion(self._spin_fan_cpu, pendiente)
+                           or self._en_edicion(self._spin_fan_gpu, pendiente)):
             minimo = self._control.FAN_MIN_PCT
             self._spin_fan_cpu.set_value(max(minimo, min(100, cpu)))
             self._spin_fan_gpu.set_value(max(minimo, min(100, gpu)))
@@ -933,12 +938,25 @@ class VentanaNitro(Adw.ApplicationWindow):
         foco a la fila, y sin esto el tic de 1 Hz devolvia el selector al valor
         del hardware y se perdia el cambio antes de escribirlo.
         """
-        if self._id_pl1 is not None:
+        return self._en_edicion(self._spin_pl1, self._id_pl1 is not None)
+
+    def _en_edicion(self, spin, escritura_pendiente: bool) -> bool:
+        """¿Esta el usuario tocando *spin* ahora mismo?
+
+        Es el cuerpo que antes vivia dentro de _spin_en_edicion(), sacado aqui
+        porque el mismo problema lo tienen TODOS los selectores, no solo el del
+        PL1.  Se aprendio dos veces: la segunda, con los selectores de velocidad
+        de ventilador, donde `spin.has_focus()` volvia a devolver False siempre
+        y el tic de 1 Hz devolvia el valor al del hardware antes de que venciera
+        el retardo antirrafaga.  Sintoma: al bajar de 100 a 50 el selector
+        rebotaba al ultimo valor aplicado.
+        """
+        if escritura_pendiente:
             return True
         foco = self.get_focus()
         if foco is None:
             return False
-        return foco is self._spin_pl1 or foco.is_ancestor(self._spin_pl1)
+        return foco is spin or foco.is_ancestor(spin)
 
     def _actualizar_subtitulo_bateria(self, estado: sysfs.EstadoRapido) -> None:
         capacidad = estado.bat_capacidad
