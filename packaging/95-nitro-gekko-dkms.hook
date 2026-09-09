@@ -1,0 +1,23 @@
+# Nitro Gekko: avisa si linuwu_sense NO ha quedado compilado para algun kernel
+# instalado.  Va despues de los hooks de DKMS de Arch (70-dkms-install.hook y
+# 71-dkms-remove.hook) porque pacman los ejecuta en orden alfabetico y esto
+# tiene que mirar el resultado, no adelantarse a el.
+#
+# Los disparadores son los mismos que usa el hook de DKMS, para no despertarse
+# en transacciones que no pueden cambiar nada:
+#   - un kernel que se instala o se actualiza
+#   - los headers de un kernel
+#   - el fuente de cualquier modulo DKMS
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/lib/modules/*/build/include/
+Target = usr/lib/modules/*/modules.order
+Target = usr/src/*/dkms.conf
+
+[Action]
+Description = Nitro Gekko: comprobando que el driver del RGB ha compilado...
+Depends = dkms
+When = PostTransaction
+Exec = /usr/lib/nitro-gekko/nitro-gekko-dkms-check

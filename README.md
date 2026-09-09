@@ -873,6 +873,19 @@ Estas mismas instrucciones van escritas **dentro** de
 `/etc/modprobe.d/nitro-gekko-rgb.conf`, que es el fichero que uno acaba
 encontrando cuando busca por que se ha quedado sin ventiladores.
 
+**Y no hace falta acordarse de mirar.** `instalar-rgb.sh` deja puesto un hook de
+pacman, `95-nitro-gekko-dkms.hook`, que al final de cada actualizacion de kernel
+comprueba que el modulo ha quedado compilado para todos los kernels instalados.
+Si no, escribe un bloque en rojo con estas mismas ordenes y termina con estado
+distinto de cero, para que pacman lo remate con su propio `error:`. El numero 95
+no es decorativo: pacman ejecuta los hooks en orden alfabetico y este tiene que
+ir despues de los de DKMS, que son el 70 y el 71.
+
+Se calla solo en los dos casos en los que no hay nada que decir: si
+`linuwu-sense` no esta registrado en DKMS, y si `acer_wmi` no esta en la lista
+negra. Sin lista negra un fallo de compilacion no cuesta los ventiladores, y un
+aviso que salta cuando no hay peligro deja de leerse.
+
 Para probarlo en caliente, sin instalar ni persistir nada:
 
 ```bash
@@ -1686,6 +1699,15 @@ parrafo de «por que» dentro del codigo.
     fallaba en cada kernel nuevo. Cablear el `M=` a
     `${PACKAGE_NAME}/${PACKAGE_VERSION}` es la otra mitad del mismo fallo:
     apunta a un arbol que, con otro nombre registrado, no existe.
+20. **Nada de `productor | grep -q` en estos scripts**, que llevan todos
+    `set -o pipefail`. `grep -q` sale en cuanto acierta, el productor se queda
+    escribiendo en una tuberia cerrada, se lleva un SIGPIPE y la tuberia
+    devuelve **141**, no 0. Medido aqui con `lsmod | grep -q linuwu_sense`:
+    fallaba una de cada dos veces. Se lee con `grep -q PATRON < <(productor)`,
+    que no tiene estado de tuberia, o directamente del fichero
+    (`grep -q '^linuwu_sense ' /proc/modules`). No es cosmetica: asi era como
+    la comprobacion de `strncpy()` podia decir que un fuente estaba limpio
+    cuando no lo estaba.
 
 ### El presupuesto de tiempo
 

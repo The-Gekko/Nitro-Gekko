@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+#
+# Lo lanza 95-nitro-gekko-dkms.hook al final de cada transaccion de pacman que
+# toque un kernel, unos headers o el fuente de un modulo DKMS.
+#
+# QUE PROBLEMA RESUELVE
+# ---------------------
+# instalar-rgb.sh deja acer_wmi en la lista negra porque linuwu_sense lo
+# sustituye.  Mientras el modulo compile no pasa nada.  El dia que NO compile
+# -el driver usa API interna del kernel, y eso se rompe- arrancas sin
+# platform_profile, sin RPM de ventiladores y sin RGB, los tres a la vez.
+#
+# El hook de DKMS de Arch ya avisa cuando falla, pero lo hace con una linea
+# suelta en medio de la salida de una actualizacion larga, y se pierde.  Aqui
+# el aviso es un bloque, dice exactamente que hacer, y ademas se sale con
+# codigo 1 para que pacman lo remate con su propio 'error:'.  Un aviso que no
+# se ve no es un aviso.
+#
+# CUANDO NO DICE NADA
+# -------------------
+# Si linuwu-sense no esta registrado en DKMS, este equipo no lleva el driver y
+# no hay nada que comprobar: se sale en silencio.  Lo mismo si acer_wmi no
+# esta en la lista negra, porque entonces el kernel arranca con el driver de
+# serie y no hay ventiladores en juego.
+set -uo pipefail
+
+MODULO="linuwu-sense"
+CONF_BL=/etc/modprobe.d/nitro-gekko-rgb.conf
+
+command -v dkms >/dev/null 2>&1 || exit 0
+
+# Sin registro en DKMS no hay nada que vigilar.
+#
+# CUIDADO CON `productor | grep -q` Y `set -o pipefail`, que estan los dos en
+# este fichero: grep -q sale en cuanto acierta, el productor se lleva un
+# SIGPIPE y la tuberia devuelve 141 en vez de 0.  Medido en esta maquina: una
+# de cada dos veces.  Aqui eso significaria salir en silencio de un equipo que
+# SI tiene el driver, o peor, avisar de que no ha compilado uno que si.  Por
+# eso se lee por sustitucion de proceso, que no tiene estado de tuberia.
+grep -q . < <(dkms status "$MODULO" 2>/dev/null) || exit 0
+
+# Sin lista negra, un fallo de compilacion no deja el equipo sin nada: acer_wmi
+# carga igual.  Se avisa solo cuando hay algo que perder.
+[[ -f "$CONF_BL" ]] && grep -q '^blacklist acer_wmi' "$CONF_BL" 2>/dev/null || exit 0
+
+# Kernels que de verdad estan instalados.  Un directorio en /usr/lib/modules
+# puede ser un resto sin paquete detras; el criterio es el mismo que usa el
+# hook de DKMS de Arch: que tenga su arbol 'kernel'.
+FALTAN=()
+SIN_HEADERS=()
+for d in /usr/lib/modules/*/; do
+    kver="${d%/}"; kver="${kver##*/}"
+    [[ -d "$d/kernel" ]] || continue
+    if grep -q ': *installed' < <(dkms status "$MODULO" -k "$kver" 2>/dev/null); then
+        continue
+    fi
+    if [[ -d "$d/build/include" ]]; then
+        FALTAN+=("$kver")
+    else
+        SIN_HEADERS+=("$kver")
+    fi
+done
+
+(( ${#FALTAN[@]} + ${#SIN_HEADERS[@]} )) || exit 0
+
+# A stderr: es lo que pacman deja a la vista aunque la salida se este paginando.
+exec >&2
+echo
+echo "==================================================================="
+echo "  NITRO GEKKO: EL DRIVER DEL RGB NO ESTA LISTO PARA ARRANCAR"
+echo "==================================================================="
+for k in "${FALTAN[@]}"; do
+    echo "  $k: linuwu_sense NO ha compilado."
+done
+for k in "${SIN_HEADERS[@]}"; do
+    echo "  $k: faltan los headers, DKMS no puede compilar nada."
+done
+echo
+echo "  acer_wmi esta en la lista negra, asi que si reinicias con uno de"
+echo "  esos kernels te quedas SIN perfiles termicos, SIN rpm de los"
+echo "  ventiladores y SIN teclado RGB, los tres a la vez."
+echo
+echo "  ANTES DE REINICIAR, con el repositorio delante:"
+echo
+echo "    sudo ./packaging/instalar-rgb.sh"
+echo
+# El atajo solo se nombra si existe: este script se instala tambien desde AUR,
+# en maquinas donde 'gekko' no significa nada. Prometer una orden que no esta
+# es peor que no decir nada.
+if command -v gekko >/dev/null 2>&1; then
+    echo "  O el atajo, que hace lo mismo:"
+    echo
+    echo "    gekko nitro r"
+    echo
+fi
+echo "  Y si no puedes con ninguna, recupera perfiles y ventiladores"
+echo "  ahora mismo (el RGB no vuelve hasta recompilar):"
+echo
+echo "    sudo rm /etc/modprobe.d/nitro-gekko-rgb.conf"
+echo "    sudo rm /etc/modules-load.d/linuwu-sense.conf"
+echo "    echo 'options acer_wmi predator_v4=1' | sudo tee /etc/modprobe.d/acer-wmi.conf"
+echo
+echo "  El detalle del fallo:  dkms status $MODULO"
+echo "==================================================================="
+echo
+exit 1

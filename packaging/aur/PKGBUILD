@@ -69,5 +69,11 @@ package_linuwu-sense-an17-dkms() {
 
   install -Dm644 "$srcdir/nitro-gekko-rgb.conf" "$pkgdir/usr/lib/modprobe.d/nitro-gekko-rgb.conf"
   echo linuwu_sense | install -Dm644 /dev/stdin "$pkgdir/usr/lib/modules-load.d/linuwu-sense.conf"
+
+  # El vigilante va con ESTE paquete y no con nitro-gekko: el riesgo lo crea la
+  # lista negra de acer_wmi, que es lo que instala este subpaquete. El script
+  # se calla solo si no encuentra la lista negra o el modulo en DKMS.
+  install -Dm755 packaging/nitro-gekko-dkms-check "$pkgdir/usr/lib/nitro-gekko/nitro-gekko-dkms-check"
+  install -Dm644 packaging/95-nitro-gekko-dkms.hook "$pkgdir/usr/share/libalpm/hooks/95-nitro-gekko-dkms.hook"
   install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
 }

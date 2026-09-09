@@ -36,10 +36,21 @@ NOMBRE="linuwu-sense"
 # adivina nombre y version partiendo el directorio de /usr/src por el ultimo
 # guion, y un guion aqui hace que registre el modulo con otro nombre.
 VERSION="1.0.0.an17.1"
-ORIGEN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/rgb"
+RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ORIGEN="$RAIZ/rgb"
+PAQ="$RAIZ/packaging"
 DESTINO="/usr/src/${NOMBRE}-${VERSION}"
 CONF_BL=/etc/modprobe.d/nitro-gekko-rgb.conf
 CONF_LOAD=/etc/modules-load.d/linuwu-sense.conf
+
+# El vigilante: un hook de pacman que, al final de cada actualizacion de
+# kernel, comprueba que el modulo ha quedado compilado y grita si no.  Va aqui
+# y no en install.sh porque el riesgo lo crea ESTE script, que es el que pone
+# acer_wmi en la lista negra; quien solo instala la aplicacion no tiene nada
+# que vigilar.  El 95 del nombre no es decorativo: pacman ejecuta los hooks en
+# orden alfabetico y este tiene que ir despues de los de DKMS (70 y 71).
+HOOK=/usr/share/libalpm/hooks/95-nitro-gekko-dkms.hook
+VIGILANTE=/usr/lib/nitro-gekko/nitro-gekko-dkms-check
 
 if [[ -t 1 ]]; then V=$'\033[32m'; R=$'\033[31m'; A=$'\033[33m'; C=$'\033[36m'; N=$'\033[1m'; F=$'\033[0m'
 else V=; R=; A=; C=; N=; F=; fi
@@ -116,7 +127,7 @@ if [[ "$ACCION" == "revertir" ]]; then
 
     # 'rm -f' sobre lo que no existe devuelve 0, asi que antes se imprimia
     # "quitados los ficheros de configuracion" aunque no hubiera ninguno.
-    for f in "$CONF_BL" "$CONF_LOAD"; do
+    for f in "$CONF_BL" "$CONF_LOAD" "$HOOK" "$VIGILANTE"; do
         if [[ -e "$f" ]]; then
             rm -f "$f" && ok "borrado $f" || { mal "NO se pudo borrar $f"; FALLOS=1; }
         else
@@ -124,7 +135,7 @@ if [[ "$ACCION" == "revertir" ]]; then
         fi
     done
 
-    if command -v dkms >/dev/null && dkms status "$NOMBRE/$VERSION" 2>/dev/null | grep -q .; then
+    if command -v dkms >/dev/null && grep -q . < <(dkms status "$NOMBRE/$VERSION" 2>/dev/null); then
         if dkms remove "$NOMBRE/$VERSION" --all >/dev/null 2>&1; then
             ok "modulo quitado de DKMS"
         else
@@ -156,7 +167,7 @@ if [[ "$ACCION" == "revertir" ]]; then
 
     depmod -a
 
-    if lsmod | grep -q '^linuwu_sense '; then
+    if grep -q '^linuwu_sense ' /proc/modules; then
         modprobe -r linuwu_sense 2>/dev/null && ok "linuwu_sense descargado" \
             || { mal "no se pudo descargar linuwu_sense (reinicia)"; FALLOS=1; }
     fi
@@ -332,7 +343,14 @@ grep -q "Nitro AN17-51" "$FUENTE_C" && ok "el fuente lleva el parche del AN17-51
 # perfectamente.  Se descartan las lineas de comentario de bloque (` * `) y de
 # linea (`//`, `/*`), que es donde vive esa explicacion.
 solo_codigo() { grep -vE '^[[:space:]]*(\*|//|/\*)' "$1"; }
-if solo_codigo "$FUENTE_C" | grep -q "strncpy("; then
+# SE LEE POR SUSTITUCION DE PROCESO, NO POR TUBERIA.  Este script lleva
+# `set -o pipefail`, y `productor | grep -q` devuelve 141 -no 0- cuando grep
+# acierta pronto y sale, porque el productor se queda escribiendo en una
+# tuberia cerrada y se lleva un SIGPIPE.  Medido en esta maquina con `lsmod |
+# grep -q`: fallaba una de cada dos veces.  Aqui el efecto seria el peor
+# posible: la comprobacion diria «no hay strncpy()» sobre un fuente que si lo
+# tiene, y se instalaria un modulo que no compila en kernel 7.2.
+if grep -q "strncpy(" < <(solo_codigo "$FUENTE_C"); then
     mal "el fuente aun tiene strncpy() en el codigo: no compilara en kernel 7.2"
     info "Lineas:"
     grep -nE '^[[:space:]]*[^ *(/].*strncpy\(' "$FUENTE_C" | head -5 | sed 's/^/        /'
@@ -426,6 +444,22 @@ ok "$CONF_BL (acer_wmi en lista negra)"
 echo linuwu_sense > "$CONF_LOAD"
 ok "$CONF_LOAD (carga en el arranque)"
 
+# El vigilante.  Si faltan los ficheros en el repositorio no se aborta: el
+# driver ya esta instalado y funcionando, y quedarse sin el aviso es peor que
+# quedarse sin el driver a medias.  Se dice y se sigue.
+if [[ -r "$PAQ/95-nitro-gekko-dkms.hook" && -r "$PAQ/nitro-gekko-dkms-check" ]]; then
+    if install -Dm755 "$PAQ/nitro-gekko-dkms-check" "$VIGILANTE" \
+       && install -Dm644 "$PAQ/95-nitro-gekko-dkms.hook" "$HOOK"; then
+        ok "$HOOK (avisa si un kernel nuevo deja el modulo sin compilar)"
+    else
+        avi "no se pudo instalar el hook de aviso; el driver si esta instalado"
+        info "Sin el, un kernel que rompa la compilacion no te avisara."
+    fi
+else
+    avi "no encuentro el hook de aviso en $PAQ"
+    info "Clona el repositorio completo si quieres el aviso automatico."
+fi
+
 # ---------------------------------------------------------------------------
 #  Si se ha compilado para OTRO kernel, aqui se termina.
 #
@@ -460,7 +494,7 @@ if modprobe linuwu_sense 2>/dev/null; then
 else
     mal "no se pudo cargar linuwu_sense; devolviendo acer_wmi"
     modprobe sparse_keymap 2>/dev/null; modprobe acer_wmi predator_v4=1 2>/dev/null
-    rm -f "$CONF_BL" "$CONF_LOAD"
+    rm -f "$CONF_BL" "$CONF_LOAD" "$HOOK" "$VIGILANTE"
     exit 1
 fi
 sleep 3
@@ -524,8 +558,8 @@ if (( GRAVE )); then
     info "Dejarlo asi te dejaria sin perfiles termicos ni tacometros en el"
     info "proximo arranque, porque acer_wmi ya estaria en la lista negra."
     info "Deshaciendo el cambio automaticamente:"
-    rm -f "$CONF_BL" "$CONF_LOAD" && ok "quitados $CONF_BL y $CONF_LOAD"
-    lsmod | grep -q '^linuwu_sense ' && { modprobe -r linuwu_sense 2>/dev/null \
+    rm -f "$CONF_BL" "$CONF_LOAD" "$HOOK" "$VIGILANTE" && ok "quitados $CONF_BL, $CONF_LOAD y el hook de aviso"
+    grep -q '^linuwu_sense ' /proc/modules && { modprobe -r linuwu_sense 2>/dev/null \
         && ok "linuwu_sense descargado" || mal "no se pudo descargar linuwu_sense"; }
     modprobe sparse_keymap 2>/dev/null
     modprobe acer_wmi predator_v4=1 2>/dev/null && ok "acer_wmi recargado" \
