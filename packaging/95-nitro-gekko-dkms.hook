@@ -16,8 +16,13 @@ Target = usr/lib/modules/*/build/include/
 Target = usr/lib/modules/*/modules.order
 Target = usr/src/*/dkms.conf
 
+# SIN 'Depends = dkms', a proposito.  Los hooks de DKMS de Arch lo llevan
+# porque invocan dkms directamente; este llama a un script que ya comprueba si
+# dkms existe y se calla si no.  Con la linea puesta, quitar el paquete dkms no
+# silencia el aviso: lo convierte en un "error: no se pudo ejecutar el hook: no
+# se pudieron satisfacer las dependencias" en CADA actualizacion de kernel.
+# Comprobado en una raiz de pacman falsa, que es donde salio.
 [Action]
 Description = Nitro Gekko: comprobando que el driver del RGB ha compilado...
-Depends = dkms
 When = PostTransaction
 Exec = /usr/lib/nitro-gekko/nitro-gekko-dkms-check
