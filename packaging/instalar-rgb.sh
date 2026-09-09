@@ -31,7 +31,11 @@
 set -uo pipefail
 
 NOMBRE="linuwu-sense"
-VERSION="1.0.0-an17.1"
+# SIN GUION EN LA VERSION, y tiene que decir lo mismo que rgb/dkms.conf (se
+# comprueba mas abajo).  El motivo largo esta escrito alli: el hook de pacman
+# adivina nombre y version partiendo el directorio de /usr/src por el ultimo
+# guion, y un guion aqui hace que registre el modulo con otro nombre.
+VERSION="1.0.0.an17.1"
 ORIGEN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/rgb"
 DESTINO="/usr/src/${NOMBRE}-${VERSION}"
 CONF_BL=/etc/modprobe.d/nitro-gekko-rgb.conf
@@ -72,6 +76,40 @@ fi
 [[ $EUID -eq 0 ]] || { echo "Hace falta root:  sudo $0   ($0 --help no lo necesita)"; exit 1; }
 
 # ---------------------------------------------------------------------------
+#  Restos registrados con OTRO nombre.
+#
+#  Hasta la version 1.0.0-an17.1 la version llevaba guion, y el hook de pacman
+#  registraba el modulo como 'linuwu-sense-1.0.0/an17.1' en paralelo al nuestro
+#  (parte /usr/src/<nombre>-<version> por el ultimo guion; el porque completo
+#  esta en rgb/dkms.conf).  Ese registro duplicado no lo quitaba nadie -ni el
+#  --revertir de antes, que solo miraba $NOMBRE/$VERSION- y volvia a intentar
+#  compilar, y a fallar, en cada kernel nuevo.  Se barre por prefijo, no por un
+#  nombre concreto, para que valga tambien si el reparto vuelve a cambiar.
+# ---------------------------------------------------------------------------
+limpiar_restos_de_otro_nombre() {
+    local nv d encontrado=0
+    while read -r nv; do
+        [[ -z "$nv" || "$nv" == "$NOMBRE/$VERSION" ]] && continue
+        encontrado=1
+        if dkms remove "$nv" --all </dev/null >/dev/null 2>&1; then
+            avi "quitado un registro DKMS antiguo con otro nombre: $nv"
+        else
+            mal "no se pudo quitar el registro DKMS antiguo: $nv"
+            info "Quitalo a mano:  sudo dkms remove $nv --all"
+        fi
+    done < <(dkms status 2>/dev/null | sed 's/[,:].*//' | grep '^linuwu' | sort -u)
+
+    for d in /usr/src/linuwu-sense-*; do
+        [[ -d "$d" && "$d" != "$DESTINO" ]] || continue
+        encontrado=1
+        rm -rf "$d" && avi "borrado un fuente antiguo: $d" \
+            || { mal "no se pudo borrar $d"; info "Borralo a mano o el hook de pacman lo seguira compilando."; }
+    done
+
+    (( encontrado )) || info "no hay restos con otro nombre"
+}
+
+# ---------------------------------------------------------------------------
 if [[ "$ACCION" == "revertir" ]]; then
     titulo "Revirtiendo: volver a acer_wmi"
     FALLOS=0
@@ -102,6 +140,8 @@ if [[ "$ACCION" == "revertir" ]]; then
     else
         info "$DESTINO no estaba"
     fi
+
+    limpiar_restos_de_otro_nombre
 
     # Restos de un 'dkms install' que no se pudo deshacer: si el .ko sigue en
     # /lib/modules, el modulo se volveria a cargar al arrancar y todo esto no
@@ -297,6 +337,7 @@ chmod 600 "$LOG"
 info "log de la compilacion: $LOG"
 
 dkms remove "$NOMBRE/$VERSION" --all >/dev/null 2>&1 || true
+limpiar_restos_de_otro_nombre
 if dkms add "$NOMBRE/$VERSION" >>"$LOG" 2>&1; then ok "anadido a DKMS"; else
     mal "dkms add fallo. Ultimas lineas:"; tail -15 "$LOG" | sed 's/^/      /'; exit 1; fi
 if dkms build "$NOMBRE/$VERSION" >>"$LOG" 2>&1; then

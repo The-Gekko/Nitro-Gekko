@@ -1671,6 +1671,14 @@ parrafo de «por que» dentro del codigo.
     sincrona dentro de `gnome-shell` congela el compositor entero.
 18. **No se traduce nada al ingles** ni se «limpian» los comentarios largos.
     Ver [El estilo, que hay que imitar](#el-estilo-que-hay-que-imitar).
+19. **La version del modulo DKMS no lleva guion**, y el `M=` de `MAKE[0]` va con
+    `${module}/${module_version}`. El hook de pacman no lee el `dkms.conf`:
+    adivina que recompilar partiendo `/usr/src/<nombre>-<version>` por el
+    **ultimo** guion. Con `1.0.0-an17.1` registraba el modulo como
+    `linuwu-sense-1.0.0/an17.1`, en paralelo al bueno, y ese registro fantasma
+    fallaba en cada kernel nuevo. Cablear el `M=` a
+    `${PACKAGE_NAME}/${PACKAGE_VERSION}` es la otra mitad del mismo fallo:
+    apunta a un arbol que, con otro nombre registrado, no existe.
 
 ### El presupuesto de tiempo
 
