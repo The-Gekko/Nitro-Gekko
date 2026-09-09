@@ -648,10 +648,33 @@ LANZADOR
     # -- iconos ---------------------------------------------------------------
     # Se acepta tanto data/icons/hicolor/... (arbol ya montado) como
     # data/<APP_ID>.svg suelto.
+    #
+    # UN SVG TIENE QUE DECLARAR SU ETIQUETA <svg DENTRO DE LOS PRIMEROS 256
+    # BYTES.  No es un capricho de estilo: GdkPixbuf averigua el formato de un
+    # fichero olfateando solo el principio, y GNOME Shell carga los iconos por
+    # ahi.  Medido en esta maquina por biseccion: con `<svg` en el byte 256
+    # carga, en el 257 contesta «Couldn't recognize the image file format».
+    # Un comentario largo por delante de la etiqueta basta para pasarse, y el
+    # sintoma no es un icono feo: es NINGUN icono, y solo en la rejilla de
+    # aplicaciones, que es el unico sitio que pide 96 px y por tanto el unico
+    # que cae en el SVG en vez de en un PNG. rsvg-convert y los navegadores lo
+    # renderizan igual, asi que a ojo el fichero parece perfecto.
+    comprobar_svg() {
+        # Sustitucion de proceso y no tuberia: con `set -o pipefail`, un
+        # `head | grep -q` devuelve 141 si grep acierta pronto y head se lleva
+        # un SIGPIPE.  Ver «Las reglas que no se negocian» del README.
+        grep -q '<svg' < <(head -c 256 "$1")
+    }
     local instalado_icono=0
     if [[ -d "$RAIZ/data/icons/hicolor" ]]; then
         while IFS= read -r -d '' icono; do
             local rel="${icono#"$RAIZ"/data/icons/hicolor/}"
+            if [[ "$icono" == *.svg ]] && ! comprobar_svg "$icono"; then
+                error_contado "${rel}: la etiqueta <svg no esta en los primeros 256 bytes."
+                aviso "GdkPixbuf no sabra que formato es y GNOME lo pintara vacio."
+                aviso "Mueve el comentario de cabecera DENTRO del <svg>, detras de la etiqueta."
+                continue
+            fi
             if install -Dm644 "$icono" "${DESTDIR}${DIR_ICONOS}/${rel}"; then
                 ok "${DIR_ICONOS}/${rel}"
                 instalado_icono=1

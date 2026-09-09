@@ -1708,6 +1708,17 @@ parrafo de «por que» dentro del codigo.
     (`grep -q '^linuwu_sense ' /proc/modules`). No es cosmetica: asi era como
     la comprobacion de `strncpy()` podia decir que un fuente estaba limpio
     cuando no lo estaba.
+21. **Un `.svg` declara su etiqueta `<svg` dentro de los primeros 256 bytes**, y
+    por eso el comentario de cabecera del icono va **dentro** del `<svg>`, no
+    delante. GdkPixbuf averigua el formato olfateando solo el principio del
+    fichero, y GNOME Shell carga los iconos por ahi. Medido por biseccion en
+    este equipo: con la etiqueta en el byte 256 carga, en el 257 responde
+    «Couldn't recognize the image file format». Un comentario largo por delante
+    basta para pasarse, y entonces no sale un icono feo: **no sale ninguno**, y
+    ademas solo en la rejilla de aplicaciones, que es el unico sitio que pide
+    96 px y por tanto el unico que cae en el SVG en vez de en un PNG.
+    `rsvg-convert` y los navegadores lo dibujan igual de bien, asi que a ojo el
+    fichero parece perfecto. `install.sh` lo comprueba antes de instalar.
 
 ### El presupuesto de tiempo
 

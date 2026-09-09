@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
 <!--
+  EL COMENTARIO VA DENTRO DEL <svg>, Y NO ANTES.  NO SE MUEVE.
+
+  GdkPixbuf averigua el formato de un fichero olfateando solo sus primeros
+  bytes.  Medido en esta maquina por biseccion: con `<svg` en el byte 256 el
+  icono carga, en el 257 ya no.  Este comentario ocupa mas que eso, asi que
+  puesto por delante empujaba la etiqueta al byte 662 y GdkPixbuf contestaba
+  «Couldn't recognize the image file format».
+  El sintoma no era un icono feo, era NINGUN icono: en la rejilla de
+  aplicaciones de GNOME salia el nombre «Nitro Gekko» sobre un hueco vacio.
+  Solo ahi, porque la rejilla pide 96 px y ese es el unico tamano que no
+  tenemos en PNG, asi que es el unico sitio que cae en el SVG.
+  Renderizadores de verdad -rsvg-convert, un navegador- se lo tragaban sin
+  quejarse, que es lo que despistaba.
+
   Icono de aplicacion de Nitro Gekko.
 
   No usa el logo ilustrado del proyecto a proposito: una ilustracion detallada
@@ -13,7 +28,6 @@
 
   Lienzo 128x128 con margen de 8 px, segun la guia de iconos de GNOME.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>
     <linearGradient id="fondo" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0"    stop-color="#0E7490"/>
