@@ -160,7 +160,14 @@ sudo pacman -S dkms linux-zen-headers   # linux-headers / linux-lts-headers
 
 `dkms` ya arrastra `gcc`, `make` y `patch`, asi que no hace falta `base-devel`.
 Los headers tienen que ser los del kernel **en marcha**, no los de otro que
-tengas instalado: `instalar-rgb.sh` lo comprueba y te dice cual falta.
+tengas instalado, e `instalar-rgb.sh` te dice cual falta.
+
+La excepcion es **haber actualizado el kernel y no haber reiniciado todavia**.
+Ahi el arbol de construccion del kernel en marcha ya no existe, porque pacman
+lo ha sustituido por el del nuevo. En vez de abortar, el script compila para el
+kernel **que vas a arrancar**: te lo dice al empezar, se salta la carga en
+caliente porque un `.ko` de otro kernel no se puede cargar, y termina
+recordandote que compruebes `dkms status linuwu-sense` antes de reiniciar.
 
 > **La extension solo carga en GNOME Shell 50.** Su `metadata.json` declara
 > `"shell-version": ["50"]` y GNOME **rechaza** una extension cuya version no

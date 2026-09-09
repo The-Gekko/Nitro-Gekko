@@ -277,22 +277,51 @@ ok "dkms.conf coherente: ${CONF_NOMBRE}/${CONF_VERSION}"
 
 command -v dkms >/dev/null && ok "dkms $(dkms --version 2>/dev/null | head -1)" || { mal "falta dkms:  sudo pacman -S dkms"; exit 1; }
 
-# -- headers del kernel EN MARCHA ------------------------------------------
-# Mirar si el paquete linux-zen-headers esta instalado no basta: lo que DKMS
-# necesita es el arbol de construccion del kernel que esta corriendo AHORA.
-# Puedes tener los headers de linux-zen instalados y estar arrancado con
-# linux normal, y entonces la compilacion falla.
-KDIR="/lib/modules/$(uname -r)/build"
-if [[ -d "$KDIR" ]]; then
-    ok "headers del kernel en marcha: $KDIR"
-else
-    mal "no existe $KDIR: faltan los headers del kernel $(uname -r)"
+# -- para que kernel se compila --------------------------------------------
+# Lo normal es compilar para el kernel EN MARCHA, y asi ademas se puede cargar
+# el modulo en caliente al final.  Mirar si el paquete linux-zen-headers esta
+# instalado no basta: lo que DKMS necesita es el arbol de construccion de ESE
+# kernel.  Puedes tener los headers de linux-zen instalados y estar arrancado
+# con linux normal, y entonces la compilacion falla.
+#
+# PERO HAY UN CASO EN EL QUE EL ARBOL DEL KERNEL EN MARCHA YA NO EXISTE, y es
+# justo cuando mas falta hace este script: acabas de actualizar el kernel y aun
+# no has reiniciado.  pacman ha sustituido /usr/lib/modules/<version> por la
+# nueva y la del kernel que corre ha desaparecido.  Antes el script abortaba
+# aqui, y la unica salida era reiniciar primero... que es exactamente arrancar
+# sin perfiles termicos y sin ventiladores, lo que se intenta evitar.  Asi que
+# si el kernel en marcha no tiene arbol, se compila para el mas nuevo que SI lo
+# tenga -el que va a arrancar- y se avisa de que hace falta reiniciar.
+KVER_OBJETIVO="$(uname -r)"
+EN_CALIENTE=1
+if [[ ! -d "/usr/lib/modules/$KVER_OBJETIVO/build" ]]; then
+    EN_CALIENTE=0
+    # sort -V y no 'ls | tail': ordena 7.2.10 despues de 7.2.9, que es lo que
+    # hace falta y lo que el orden alfabetico se come.
+    KVER_OBJETIVO="$(
+        for d in /usr/lib/modules/*/build; do
+            [[ -d "$d" ]] || continue
+            d="${d%/build}"; echo "${d##*/}"
+        done | sort -V | tail -1
+    )"
+fi
+if [[ -z "$KVER_OBJETIVO" ]]; then
+    mal "ningun kernel de /usr/lib/modules tiene arbol de construccion"
+    info "Sin el, DKMS no puede compilar nada. Instala los headers de tu kernel:"
     case "$(uname -r)" in
-        *-zen) info "Instalalos con:  sudo pacman -S linux-zen-headers" ;;
-        *-lts) info "Instalalos con:  sudo pacman -S linux-lts-headers" ;;
-        *)     info "Instalalos con:  sudo pacman -S linux-headers" ;;
+        *-zen) info "    sudo pacman -S linux-zen-headers" ;;
+        *-lts) info "    sudo pacman -S linux-lts-headers" ;;
+        *)     info "    sudo pacman -S linux-headers" ;;
     esac
     exit 1
+fi
+if (( EN_CALIENTE )); then
+    ok "headers del kernel en marcha: /usr/lib/modules/$KVER_OBJETIVO/build"
+else
+    avi "el kernel en marcha ($(uname -r)) ya no tiene arbol de construccion."
+    info "Pasa cuando has actualizado el kernel y todavia no has reiniciado."
+    info "Se compila para $KVER_OBJETIVO, que es el que vas a arrancar."
+    info "El driver quedara activo al reiniciar; en caliente no se puede."
 fi
 
 grep -q "Nitro AN17-51" "$FUENTE_C" && ok "el fuente lleva el parche del AN17-51" || { mal "el fuente NO lleva el parche"; exit 1; }
@@ -340,7 +369,7 @@ dkms remove "$NOMBRE/$VERSION" --all >/dev/null 2>&1 || true
 limpiar_restos_de_otro_nombre
 if dkms add "$NOMBRE/$VERSION" >>"$LOG" 2>&1; then ok "anadido a DKMS"; else
     mal "dkms add fallo. Ultimas lineas:"; tail -15 "$LOG" | sed 's/^/      /'; exit 1; fi
-if dkms build "$NOMBRE/$VERSION" >>"$LOG" 2>&1; then
+if dkms build "$NOMBRE/$VERSION" -k "$KVER_OBJETIVO" >>"$LOG" 2>&1; then
     ok "compilado"
 else
     mal "dkms build fallo. Ultimas lineas:"
@@ -348,7 +377,7 @@ else
     info "Log completo en: $LOG"
     exit 1
 fi
-if dkms install "$NOMBRE/$VERSION" >>"$LOG" 2>&1; then ok "instalado"; else
+if dkms install "$NOMBRE/$VERSION" -k "$KVER_OBJETIVO" >>"$LOG" 2>&1; then ok "instalado"; else
     mal "dkms install fallo. Ultimas lineas:"; tail -15 "$LOG" | sed 's/^/      /'; exit 1; fi
 dkms status "$NOMBRE" | sed 's/^/        /'
 
@@ -396,6 +425,29 @@ ok "$CONF_BL (acer_wmi en lista negra)"
 
 echo linuwu_sense > "$CONF_LOAD"
 ok "$CONF_LOAD (carga en el arranque)"
+
+# ---------------------------------------------------------------------------
+#  Si se ha compilado para OTRO kernel, aqui se termina.
+#
+#  Los pasos 5 y 6 cargan el modulo y comprueban que repone los perfiles, los
+#  tacometros y el RGB.  Con un .ko de un kernel que todavia no esta corriendo
+#  no se puede hacer ni lo uno ni lo otro: 'modprobe' lo rechazaria por
+#  vermagic.  Se dice claramente que falta reiniciar y como comprobarlo ANTES
+#  de hacerlo, que es el momento en el que aun se puede dar marcha atras.
+# ---------------------------------------------------------------------------
+if (( ! EN_CALIENTE )); then
+    titulo "Resumen"
+    echo "  ${A}Instalado para $KVER_OBJETIVO, que no es el kernel en marcha.${F}"
+    echo "  Comprueba que ha quedado bien ANTES de reiniciar:"
+    echo
+    info "    dkms status $NOMBRE"
+    echo
+    info "Tiene que decir 'installed' para $KVER_OBJETIVO. Si lo dice, al"
+    info "reiniciar arrancaras con linuwu_sense, con los perfiles y con el RGB."
+    info "Si NO lo dice, no reinicies sin leer antes las instrucciones de"
+    info "recuperacion que estan escritas dentro de $CONF_BL."
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 titulo "5. Cambiando el driver ahora, sin reiniciar"
