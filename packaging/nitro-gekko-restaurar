@@ -211,6 +211,14 @@ for ranura in "${ORDEN[@]}"; do
     accion="${ACCION[$ranura]:-}"
     [[ -n "$accion" ]] || continue
     valor="${VALOR[$ranura]:-}"
+    # Los ficheros de estado anteriores al 2026-09-23 anotaban el PL1 en
+    # microvatios, que el helper rechaza porque la accion pl1 recibe vatios
+    # (y el arranque decia «PL1 fuera de rango: 45000000 W»).  Se traducen
+    # aqui; el helper ya anota en vatios.  Un valor en vatios no acaba nunca
+    # en seis ceros, asi que no se puede confundir.
+    if [[ "$ranura" == pl1 && "$valor" =~ ^[1-9][0-9]*000000$ ]]; then
+        valor="${valor%000000}"
+    fi
     # El modo de una ranura por fuente se escribe con la accion «perfil», que
     # aplica Y lo vuelve a anotar en la ranura de la fuente de ahora.  Con
     # perfil_ac o perfil_bateria el helper solo escribiria si coincide la

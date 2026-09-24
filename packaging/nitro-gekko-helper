@@ -685,6 +685,16 @@ def registrar(accion: str, valor: str) -> None:
     2. Al anotar perfil_ac o perfil_bateria se borra la ranura "perfil" de
        antes, para que un valor viejo no reaparezca como respaldo.
 
+    LO QUE SE ANOTA TIENE QUE PODER VOLVER A ENTRAR POR EL HELPER
+    -------------------------------------------------------------
+    nitro-gekko-restaurar repone cada linea llamando al helper con la MISMA
+    accion, asi que el valor anotado tiene que ser uno que esa accion acepte.
+    Todos los validadores devuelven la forma que reciben, menos validar_pl1(),
+    que recibe vatios y devuelve microvatios (lo que se escribe en /sys). Se
+    anotaban los microvatios y el arranque los rechazaba: "PL1 fuera de rango:
+    45000000 W", en cada arranque desde que existe la persistencia. Visto en
+    el journal de la maquina el 2026-09-23. Por eso el PL1 se anota en vatios.
+
     POR QUE HAY CERROJO
     -------------------
     Ahora escriben aqui dos procesos que pueden coincidir: el helper que lanza
@@ -697,6 +707,8 @@ def registrar(accion: str, valor: str) -> None:
     ranura = ranura_de(accion)
     if ranura is None:
         return
+    if accion == "pl1":
+        valor = str(int(valor) // 1_000_000)
     fd = None
     try:
         DIR_ESTADO.mkdir(mode=0o755, parents=True, exist_ok=True)
