@@ -69,6 +69,13 @@ readonly FICHERO_HELPER="nitro-gekko-helper"
 readonly FICHERO_RESTAURAR="nitro-gekko-restaurar"
 readonly FICHERO_UNIDAD="nitro-gekko-restaurar.service"
 readonly FICHERO_POLICY="org.thegekko.nitrogekko.policy"
+# Las piezas que recuerdan un modo con cargador y otro con bateria, como
+# NitroSense.  Se instalan SIEMPRE, en los dos modos de permisos: la regla udev
+# de aqui no abre ninguna ruta, solo arranca un servicio que pasa por el helper.
+readonly FICHERO_UNIDAD_CORRIENTE="nitro-gekko-corriente.service"
+readonly FICHERO_UNIDAD_PERFIL="nitro-gekko-perfil.service"
+readonly FICHERO_PATH_PERFIL="nitro-gekko-perfil.path"
+readonly FICHERO_UDEV_CORRIENTE="98-nitro-gekko-corriente.rules"
 
 # Modo de privilegios.  Por DEFECTO solo polkit: la aplicacion llama al helper
 # por pkexec y GNOME pide la contrasena.  Con --con-udev se instalan ademas las
@@ -465,8 +472,9 @@ instalar() {
 
     # -- permisos (1): helper privilegiado + politica polkit -----------------
     # Este es el camino POR DEFECTO. El helper corre como root via pkexec y solo
-    # acepta TRECE acciones con nombre; la lista de rutas vive dentro de el, no
-    # se le pasa desde fuera.  Ver 'Seguridad y permisos' en el README.
+    # acepta una lista CERRADA de acciones con nombre (ACCIONES, dentro del
+    # propio helper); la lista de rutas vive dentro de el, no se le pasa desde
+    # fuera.  Ver 'Seguridad y permisos' en el README.
     poner 755 "$RAIZ/packaging/$FICHERO_HELPER" "$DIR_APP/$FICHERO_HELPER" || true
 
     # -- persistencia entre arranques ----------------------------------------
@@ -485,6 +493,29 @@ instalar() {
             ok "${DIR_ESTADO}/  (estado para reponer tras reiniciar)"
         else
             aviso_contado "NO se pudo crear ${DIR_ESTADO}/: no se repondran los ajustes."
+        fi
+
+        # Un modo con cargador y otro con bateria, como NitroSense:
+        #   - la ruta .path anota cada cambio de modo, venga de donde venga;
+        #   - la regla udev repone el modo de la fuente nueva al enchufar o
+        #     desenchufar el cargador.
+        # udev descarta EN SILENCIO una regla que no sabe leer (regla 13 del
+        # README), asi que se valida antes igual que la de --con-udev.
+        local pieza
+        for pieza in "$FICHERO_UNIDAD_CORRIENTE" "$FICHERO_UNIDAD_PERFIL" "$FICHERO_PATH_PERFIL"; do
+            if [[ -f "$RAIZ/packaging/$pieza" ]]; then
+                poner 644 "$RAIZ/packaging/$pieza" "$DIR_SYSTEMD/$pieza" || true
+            else
+                aviso_contado "Falta packaging/$pieza: el modo no se recordara por fuente."
+            fi
+        done
+        if [[ -f "$RAIZ/packaging/$FICHERO_UDEV_CORRIENTE" ]]; then
+            if command -v udevadm >/dev/null \
+               && ! udevadm verify "$RAIZ/packaging/$FICHERO_UDEV_CORRIENTE" >/dev/null 2>&1; then
+                aviso_contado "'udevadm verify' rechaza packaging/$FICHERO_UDEV_CORRIENTE:"
+                udevadm verify "$RAIZ/packaging/$FICHERO_UDEV_CORRIENTE" 2>&1 | sed 's/^/      /' >&2 || true
+            fi
+            poner 644 "$RAIZ/packaging/$FICHERO_UDEV_CORRIENTE" "$DIR_UDEV/$FICHERO_UDEV_CORRIENTE" || true
         fi
     fi
     if [[ -f "$RAIZ/packaging/$FICHERO_POLICY" ]]; then
@@ -804,6 +835,29 @@ recargar() {
         fi
     fi
 
+    # -- vigilante del modo (un modo por fuente de alimentacion) -------------
+    # Con --now a proposito, al reves que la de arriba: no escribe nada, solo
+    # empieza a vigilar, y sin arrancarla el primer cambio de modo de esta
+    # sesion no quedaria anotado.
+    if [[ -f "${DIR_SYSTEMD}/${FICHERO_PATH_PERFIL}" ]] && command -v systemctl >/dev/null; then
+        systemctl daemon-reload 2>/dev/null || true
+        if systemctl enable --now "${FICHERO_PATH_PERFIL}" >/dev/null 2>&1; then
+            ok "${FICHERO_PATH_PERFIL} activada (recuerda el modo con cargador y con bateria)"
+        else
+            aviso_contado "NO se pudo activar ${FICHERO_PATH_PERFIL}:"
+            aviso_contado "    sudo systemctl enable --now ${FICHERO_PATH_PERFIL}"
+        fi
+    fi
+    # La regla del cargador vale en los dos modos de permisos, asi que udev se
+    # recarga aqui, antes de la salida del modo polkit.
+    if [[ -f "${DIR_UDEV}/${FICHERO_UDEV_CORRIENTE}" ]] && command -v udevadm >/dev/null; then
+        if udevadm control --reload 2>/dev/null; then
+            ok "udev recargado (${FICHERO_UDEV_CORRIENTE})"
+        else
+            aviso_contado "No se ha podido hablar con udevd: la regla del cargador se aplicara al arrancar."
+        fi
+    fi
+
     if (( ! CON_UDEV )); then
         # En modo polkit no se instala ninguna regla ni tmpfiles, asi que no
         # hay nada que recargar: intentarlo solo produce un error confuso
@@ -890,15 +944,22 @@ desinstalar() {
     # se queda con un enlace roto en /etc/systemd/system/multi-user.target.wants
     # y lo dice en cada arranque.
     if [[ -z "$DESTDIR" ]] && command -v systemctl >/dev/null; then
-        if systemctl list-unit-files "$FICHERO_UNIDAD" >/dev/null 2>&1; then
-            systemctl disable --now "$FICHERO_UNIDAD" >/dev/null 2>&1 || true
-        fi
+        local unidad
+        for unidad in "$FICHERO_UNIDAD" "$FICHERO_PATH_PERFIL"; do
+            if systemctl list-unit-files "$unidad" >/dev/null 2>&1; then
+                systemctl disable --now "$unidad" >/dev/null 2>&1 || true
+            fi
+        done
     fi
 
     local objetivo
     for objetivo in \
         "$DIR_POLKIT/$FICHERO_POLICY" \
         "$DIR_SYSTEMD/$FICHERO_UNIDAD" \
+        "$DIR_SYSTEMD/$FICHERO_UNIDAD_CORRIENTE" \
+        "$DIR_SYSTEMD/$FICHERO_UNIDAD_PERFIL" \
+        "$DIR_SYSTEMD/$FICHERO_PATH_PERFIL" \
+        "$DIR_UDEV/$FICHERO_UDEV_CORRIENTE" \
         "$DIR_UDEV/$FICHERO_UDEV" \
         "$DIR_TMPFILES/$FICHERO_TMPFILES" \
         "$DIR_BIN/$APP_BIN" \
@@ -999,6 +1060,11 @@ desinstalar() {
     local objetivo2
     for objetivo2 in \
         "$DIR_POLKIT/$FICHERO_POLICY" \
+        "$DIR_SYSTEMD/$FICHERO_UNIDAD" \
+        "$DIR_SYSTEMD/$FICHERO_UNIDAD_CORRIENTE" \
+        "$DIR_SYSTEMD/$FICHERO_UNIDAD_PERFIL" \
+        "$DIR_SYSTEMD/$FICHERO_PATH_PERFIL" \
+        "$DIR_UDEV/$FICHERO_UDEV_CORRIENTE" \
         "$DIR_UDEV/$FICHERO_UDEV" \
         "$DIR_TMPFILES/$FICHERO_TMPFILES" \
         "$DIR_BIN/$APP_BIN" \
@@ -1082,6 +1148,14 @@ $APP_NOMBRE - instalador de la aplicacion
   Que instala SIEMPRE  (todo root:root; los modos entre parentesis):
     0755  ${DIR_APP}/${FICHERO_HELPER}
           el unico que corre como root, invocado por pkexec
+    0755  ${DIR_APP}/${FICHERO_RESTAURAR}
+    0644  ${DIR_SYSTEMD}/${FICHERO_UNIDAD}
+    0644  ${DIR_SYSTEMD}/${FICHERO_UNIDAD_CORRIENTE}
+    0644  ${DIR_SYSTEMD}/${FICHERO_UNIDAD_PERFIL}
+    0644  ${DIR_SYSTEMD}/${FICHERO_PATH_PERFIL}
+    0644  ${DIR_UDEV}/${FICHERO_UDEV_CORRIENTE}
+          no abre permisos: arranca ${FICHERO_UNIDAD_CORRIENTE} al enchufar
+          o desenchufar el cargador
     0644  ${DIR_POLKIT}/${FICHERO_POLICY}
     0644  ${DIR_APP}/gekkonitro/*.py       (directorios 0755)
     0755  ${DIR_BIN}/${APP_BIN}

@@ -1,0 +1,24 @@
+[Unit]
+Description=Vigilar el modo termico para que Nitro Gekko lo recuerde
+Documentation=https://github.com/The-Gekko/Nitro-Gekko
+# Despues de cargar los modulos: si systemd empezara a vigilar antes de que
+# exista platform_profile, dependeria de que sysfs avise de la creacion del
+# fichero, y eso no esta comprobado.
+After=systemd-modules-load.service
+Wants=systemd-modules-load.service
+
+[Path]
+# El fichero legacy es el que notifica los cambios (gotcha 7 del README): es
+# el mismo que vigilan power-profiles-daemon y la extension.  PathModified y
+# no PathChanged, porque sysfs avisa con una modificacion, no con un cierre
+# tras escritura.  Comprobado el 2026-09-23 con inotify en la maquina: cada
+# cambio de power-profiles-daemon da UN IN_MODIFY en este fichero (y otro en
+# platform-profile-0/profile), y ningun IN_CLOSE_WRITE.  La tecla de modo pasa
+# por el mismo platform_profile_notify().  El reponer del propio driver al
+# enchufar (acer_predator_state_restore) NO avisa: de eso se encarga
+# nitro-gekko-corriente.service.
+PathModified=/sys/firmware/acpi/platform_profile
+Unit=nitro-gekko-perfil.service
+
+[Install]
+WantedBy=multi-user.target

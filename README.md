@@ -87,23 +87,38 @@ Una aplicacion de escritorio y una extension de GNOME Shell que ponen en un
 sitio comodo lo que en este portatil solo se puede tocar escribiendo a mano en
 `/sys` como root:
 
-- **Perfil termico** — los cinco perfiles reales del equipo
-  (`low-power`, `quiet`, `balanced`, `balanced-performance`, `performance`),
-  leidos del kernel, no codificados a fuego.
-- **Ventiladores** — RPM del ventilador de CPU y del de GPU, en vivo,
-  con las RPM tipicas de cada perfil medidas en este equipo como referencia, y
-  **control manual** de los dos, que es lo que en Windows hace NitroSense.
+- **Modo del sistema** — los cinco modos reales del equipo, **con los nombres
+  de NitroSense** (Silencioso, Equilibrado, Rendimiento, Turbo y Eco), leidos
+  del kernel y no codificados a fuego. Como en Windows, con cargador se
+  ofrecen cuatro y con bateria dos, y se recuerda un modo para cada fuente.
+- **Escenarios** — Uso diario, Juego y Ocasion tranquila, como en NitroSense:
+  un clic pone el modo con cargador y con bateria, los ventiladores y la
+  iluminacion. Se pueden editar.
+- **Ventiladores** — RPM del ventilador de CPU y del de GPU, en vivo, con las
+  RPM tipicas de cada modo medidas en este equipo, y los tres modos de
+  NitroSense: **Automatico, Maximo y Personalizado**, con «Auto» por
+  ventilador.
+- **Tecla de modo** — que recorra los modos o que active y desactive el Turbo,
+  la misma opcion que trae NitroSense.
 - **Potencia** — limite de potencia sostenida de la CPU (PL1), estado del
   turbo, y un interruptor para **reaplicar el PL1 cuando cambias de perfil**
   (hace falta: el firmware reescribe el PL1 por MMIO en cada cambio).
-- **Bateria** — limite de carga al 80 % y temperatura de la bateria.
+- **Bateria** — carga optimizada (limite al 80 %), temperatura, salud
+  (capacidad frente a la de fabrica) y **calibracion**, detras de un dialogo
+  con los mismos avisos que en Windows.
 - **Pantalla** — overdrive del panel.
 - **Teclado RGB de 4 zonas** — efectos del firmware, color por zona y los
-  extras del EC (apagado automatico, carga USB, sonido de arranque).
-- **Temperaturas** — paquete de CPU, frecuencia media y datos de la GPU.
+  extras del EC (apagado automatico, carga USB, sonido de arranque), y las
+  teclas especiales de accesibilidad.
+- **Supervision** — temperatura y uso de CPU, frecuencia media, memoria y
+  temperatura, uso y frecuencia de la GPU.
 
-La extension anade el cambio de perfil termico y las RPM a **Configuracion
-rapida**, para no tener que abrir la aplicacion.
+La extension anade el cambio de modo y las RPM a **Configuracion rapida**, para
+no tener que abrir la aplicacion, y ensena el modo nuevo en pantalla cuando
+cambia desde fuera (por ejemplo, con la tecla de modo).
+
+Lo que tiene NitroSense y lo que no, funcion por funcion: [NitroSense y Nitro
+Gekko, funcion por funcion](#nitrosense-y-nitro-gekko-funcion-por-funcion).
 
 ## Que resuelve
 
@@ -123,6 +138,54 @@ En un Nitro AN17-51 con Arch, de fabrica:
 
 Nitro Gekko junta todo eso y pide la autorizacion **una sola vez** por el
 dialogo de GNOME en vez de exigir `sudo` en cada cambio.
+
+## NitroSense y Nitro Gekko, funcion por funcion
+
+El objetivo es que el portatil se comporte en Linux **igual que en Windows**
+con NitroSense. Esta tabla sale de mirar el NitroSense que trae **este**
+AN17-51 (version 5.0.1327, el 23 de septiembre de 2026), no de su publicidad:
+
+- su codigo (es una aplicacion Electron; la logica esta en su `app.asar`);
+- sus ajustes por modelo, en
+  `C:\ProgramData\OEM\NitroSense\Models\Nitro AN17-51\Settings.json`;
+- su registro, y **consultas de solo lectura** a su servicio
+  (`AcerAgentService`, `127.0.0.1:46933`), que devuelve lo que el firmware
+  dice soportar: modos `QUIET DEFAULT EXTREME TURBO ECO`, ventiladores de CPU
+  y GPU de 0 a 100 %, teclado RGB de 4 zonas, overdrive **si**, logo de
+  arranque **no**, modo de GPU **no**.
+
+| En NitroSense | En Nitro Gekko | Notas |
+|---|---|---|
+| Modos Silencioso, Equilibrado, Rendimiento, Turbo, Eco | **igual**, con los mismos nombres | en el kernel son `quiet`, `balanced`, `balanced-performance`, `performance` y `low-power` |
+| Con cargador, 4 modos; con bateria, Equilibrado y Eco | **igual** | el driver ademas rechaza los otros con bateria |
+| Bateria por debajo del 40 %: modo en Equilibrado | **se ofrece solo Equilibrado** | NitroSense lo fuerza; aqui no hay proceso en segundo plano que lo fuerce |
+| Un modo con cargador y otro con bateria, y cambio solo al enchufar | **igual** | lo cambia el driver; Nitro Gekko lo recuerda entre arranques |
+| Tecla de modo: recorrer modos o Turbo si/no | **igual** | la gira el propio `linuwu_sense` |
+| Ventana con el modo al pulsar la tecla | aviso en pantalla de la extension | firma comprobada en el `osdWindow.js` de GNOME 50.5; falta verlo en pantalla |
+| Ventiladores Automatico / Maximo / Personalizado, «Auto» por ventilador | **igual** | minimo manual 30 %, medido (ver abajo) |
+| Ventiladores bloqueados en Silencioso y Eco | **igual** | el driver los devuelve al automatico |
+| Escenarios Uso diario, Juego, Ocasion tranquila | **si, con un clic** | NitroSense los activa solo al abrir un juego; aqui no (ver [Que no se va a anadir](#que-no-se-va-a-anadir-y-por-que)) |
+| Supervision: CPU, GPU, memoria, ventiladores | **si** | sin la red, que no es hardware del portatil |
+| Teclado RGB de 4 zonas, 8 efectos | **si**, y 12 estilos listos | |
+| Retroiluminacion apagada tras 30 s | **si** | |
+| Teclas especiales (Sticky Keys) | **si** | es el ajuste de accesibilidad del sistema, no del EC |
+| Carga de bateria optimizada (80 %) | **si** | |
+| Cargador USB con el equipo apagado (10, 20, 30 %) | **si** | |
+| Overdrive de LCD | **si** | |
+| Calibracion de la bateria | **si**, con confirmacion | la ofrece Care Center en Windows |
+| Salud de la bateria | capacidad frente a la de fabrica y ciclos | |
+| Modo de sonido DTS / TrueHarmony | **no**, EasyEffects | ver [El sonido](#el-sonido-el-dtsx-ultra-que-traia-windows) |
+| Modo de GPU (MUX) | **no aparece** en NitroSense en este modelo | el servicio responde `SUPPORT_GPU_MODE = 0` |
+| Logo de arranque personalizado | **no aparece** en este modelo | `SUPPORT_CUSTOM_BOOT_LOGO = 0` |
+| Efecto de arranque (sonido) | **si** | NitroSense lo oculta en el AN17-51 (`boot_animation_sound: false`), pero el driver lo expone y funciona |
+| Bloqueo de la tecla Windows | **no aparece** en este modelo | `windowsMenuKey: false` en sus ajustes |
+| NVIDIA Whisper Mode | **no** | el servicio responde `support: false` |
+| PL1 y Turbo Boost de la CPU | **solo en Nitro Gekko** | NitroSense no los ofrece |
+
+**Nada de esto esta probado todavia en la maquina con Linux.** Se escribio el
+2026-09-23 desde Windows, con pruebas sin hardware (la logica, el helper, el
+script que repone los ajustes y la interfaz con un GTK simulado). Lo que queda
+por probar esta en la copia local, en `AGENTS.md`, apartado «Pendientes».
 
 ---
 
@@ -505,6 +568,10 @@ quedar desfasada.
 /usr/lib/nitro-gekko/nitro-gekko-helper           ayudante privilegiado
 /usr/lib/nitro-gekko/nitro-gekko-restaurar        repone tus ajustes al arrancar
 /usr/lib/systemd/system/…restaurar.service        y su unidad
+/usr/lib/systemd/system/nitro-gekko-perfil.path   anota el modo cuando cambia
+/usr/lib/systemd/system/nitro-gekko-perfil.service
+/usr/lib/systemd/system/nitro-gekko-corriente.service  repone el modo al enchufar
+/usr/lib/udev/rules.d/98-nitro-gekko-corriente.rules   y la regla que lo lanza
 /var/lib/nitro-gekko/estado                       lo ultimo que aplicaste
 /usr/share/polkit-1/actions/…policy               politica de autorizacion
 /usr/lib/nitro-gekko/gekkonitro/                  la aplicacion
@@ -521,10 +588,12 @@ permisos de ningun fichero de `/sys`**: siguen siendo `0644 root:root`.
 
 Cuando hay que escribir algo, la aplicacion llama por `pkexec` a un ayudante
 minusculo, `nitro-gekko-helper`, que corre como root. El helper **no acepta
-rutas**: solo un nombre de accion de una lista cerrada (`perfil`, `pl1`,
-`bateria`, `bateria_ec`, `turbo`, `ventiladores`, `overdrive`, `rgb_efecto`,
-`rgb_zonas`, `retro_timeout`, `usb_carga`, `calibracion`, `sonido_arranque`) y
-un valor que valida contra el propio kernel antes de escribirlo. La lista blanca de rutas vive dentro del helper.
+rutas**: solo un nombre de accion de una lista cerrada (`perfil`, `perfil_ac`,
+`perfil_bateria`, `anotar_perfil`, `pl1`, `bateria`, `bateria_ec`, `turbo`,
+`ventiladores`, `overdrive`, `rgb_efecto`, `rgb_zonas`, `retro_timeout`,
+`usb_carga`, `calibracion`, `sonido_arranque`, `tecla_modo`) y un valor que
+valida contra el propio kernel antes de escribirlo. La lista blanca de rutas
+vive dentro del helper.
 
 Lo llama la aplicacion **y tambien la extension de GNOME Shell**: para los
 dos perfiles que `power-profiles-daemon` no conoce (`quiet` y
@@ -611,22 +680,36 @@ comentarios de `src/gekkonitro/` citan «gotcha 1», «gotcha 4», «gotcha 6» 
   pero solo la primera avisa de los cambios, y es la que vigila
   `power-profiles-daemon`. Por eso se lee de la de `/sys/class`, que es un pelin
   mas barata, y se **escribe siempre en la legacy**.
+8. **El modo cambia solo al enchufar o desenchufar el cargador, y lo cambia el
+  driver.** `linuwu_sense` recibe el aviso del firmware (`WMID_AC_EVENT`),
+  guarda el modo y los ventiladores de la fuente que se deja y repone los de la
+  que llega. Es lo que hace NitroSense en Windows. Pero lo guarda **en
+  memoria**: al reiniciar, lo que repone es lo de la ultima vez que se
+  descargo el modulo. Por eso Nitro Gekko anota por su cuenta un modo para cada
+  fuente y lo repone al enchufar o desenchufar (ver [Que se queda puesto al
+  reiniciar](#que-se-queda-puesto-al-reiniciar)). Ese cambio del driver **no
+  avisa** por el fichero del perfil.
+9. **Con bateria el driver rechaza Silencioso, Rendimiento y Turbo** con
+  «operacion no soportada» (`acer_predator_v4_platform_profile_set`: «in
+  official version this is not supported when its not plugged in AC»). Solo
+  deja Equilibrado y Eco, que son los dos modos que NitroSense ofrece con
+  bateria.
 
 ### RPM tipicas medidas por perfil
 
 Son las que la aplicacion y la extension muestran como referencia. Medidas en
 este equipo, en reposo:
 
-| Perfil | RPM |
-|---|---|
-| `low-power` | ~1663 |
-| `quiet` | ~1661 |
-| `balanced` | ~2200 |
-| `balanced-performance` | ~2377 |
-| `performance` | ~3237 |
+| Perfil del kernel | Nombre (el de NitroSense) | RPM |
+|---|---|---|
+| `low-power` | Eco | ~1663 |
+| `quiet` | Silencioso | ~1661 |
+| `balanced` | Equilibrado | ~2200 |
+| `balanced-performance` | Rendimiento | ~2377 |
+| `performance` | Turbo | ~3237 |
 
-Es decir: `performance` casi **duplica el ruido** de `quiet` para ganar
-alrededor de 1 °C.
+Es decir: Turbo casi **duplica el ruido** de Silencioso para ganar alrededor de
+1 °C.
 
 ## Control manual de los ventiladores
 
@@ -635,14 +718,21 @@ puede empeorar el equipo si se usa mal**. La expone el mismo driver
 `linuwu_sense` en `nitro_sense/fan_speed`, con el formato `cpu,gpu` en por
 ciento.
 
-| Valor | Que hace |
-|---|---|
-| `0,0` | **automatico**: los lleva el EC segun la temperatura |
-| `100,100` | los dos al maximo |
-| `n,m` | velocidad fija en cada uno |
+La interfaz tiene los tres modos de NitroSense:
 
-La aplicacion **no deja poner menos de un 30 %** y no acepta un `0` suelto. Los
-dos limites vienen de medir, no de suponer.
+| Modo | Valor | Que hace |
+|---|---|---|
+| **Automatico** | `0,0` | los lleva el EC segun la temperatura |
+| **Maximo** | `100,100` | los dos al maximo (el driver manda su comando propio de maximo) |
+| **Personalizado** | `n,m` | velocidad fija en cada uno; un `0` deja **ese** ventilador en automatico |
+
+En Personalizado cada ventilador tiene su casilla **«Auto»**, como en
+NitroSense. Y como alli, en **Silencioso** y en **Eco** el control queda
+bloqueado: el driver devuelve los ventiladores al automatico al entrar en esos
+dos modos.
+
+La aplicacion **no deja poner menos de un 30 %**, y ese limite viene de medir,
+no de suponer.
 
 ### El suelo esta medido, y no estaba donde parecia
 
@@ -674,9 +764,12 @@ del suelo (2691 frente a 2591).
 > el portatil mas silencioso que el automatico**, solo mas ruidoso. Sirve para
 > forzar refrigeracion, no para buscar silencio.
 
-Lo del `0` suelto es otra cosa: para el driver significa «ese ventilador en
-automatico y el otro fijo», y el mismo digito no puede querer decir dos cosas en
-una interfaz privilegiada. O los dos, o ninguno.
+Lo del `0` suelto es otra cosa, y cambio el 2026-09-23. Para el driver
+significa «ese ventilador en automatico y el otro fijo». Antes se rechazaba
+(«el mismo digito no puede querer decir dos cosas»); ahora se acepta, por
+peticion del usuario, para que funcione como NitroSense. La ambiguedad no
+existia de verdad: el minimo manual es 30, asi que un `0` **solo** puede
+significar automatico, y el driver tiene una rama propia para cada caso.
 
 Para repetir la medida en otro equipo, el script **devuelve los ventiladores al
 automatico pase lo que pase**, incluido un Ctrl+C a mitad:
@@ -691,14 +784,14 @@ sudo ./packaging/medir-ventiladores.sh        # ~3 min, con el equipo en reposo
 1. **Bajar la velocidad no puentea nada.** El PROCHOT/TCC del chip sigue ahi:
    un porcentaje bajo con carga se traduce en calor y en que la CPU se limite
    sola, no en dano.
-2. **Al automatico se vuelve por dos caminos.** Apagando el interruptor, o
-   poniendo el perfil en **Silencioso** o **Bajo consumo**: el propio driver
-   llama a `acer_set_fan_speed(0, 0)` al aplicar esos dos. Por eso la
-   aplicacion relee el estado cada segundo, para enterarse de un cambio que no
-   ha hecho ella.
-3. **No sobrevive a un reinicio.** El driver guarda el estado en
-   `/etc/predator_state` **al descargarse el modulo**, no al apagar, y lo
-   reaplica al cargarse: lo que reaparezca puede ser un valor viejo.
+2. **Al automatico se vuelve por dos caminos.** Eligiendo Automatico, o
+   poniendo el modo en **Silencioso** o **Eco**: el propio driver llama a
+   `acer_set_fan_speed(0, 0)` al aplicar esos dos. Por eso la aplicacion relee
+   el estado cada segundo, para enterarse de un cambio que no ha hecho ella.
+3. **Se repone al arrancar**, porque lo anota el helper (ver [Que se queda
+   puesto al reiniciar](#que-se-queda-puesto-al-reiniciar)); el driver por su
+   cuenta solo guarda el estado al descargarse el modulo. Y **no** se repone
+   fijo si el modo de arranque es Silencioso o Eco.
 
 ## Overdrive del panel y limite de carga por el EC
 
@@ -733,8 +826,9 @@ bateria**, que la publica ese modulo y no el EC.
 ## Que se queda puesto al reiniciar
 
 Todo lo que toques en Nitro Gekko se repone en el siguiente arranque tal como lo
-dejaste: perfil termico, PL1, turbo, velocidad de los ventiladores, limite de
-carga, overdrive del panel, teclado RGB, carga USB y sonido de arranque.
+dejaste: el modo (uno con cargador y otro con bateria), PL1, turbo, velocidad
+de los ventiladores, limite de carga, overdrive del panel, teclado RGB, carga
+USB, sonido de arranque y lo que hace la tecla de modo.
 
 ### Por que hacia falta
 
@@ -777,19 +871,67 @@ que si el perfil fuera el ultimo se llevaria por delante a los otros dos.
 en cada arranque descargaria y recargaria la bateria entera durante horas sin
 que nadie lo hubiera pedido esa vez.
 
+### Un modo con cargador y otro con bateria
+
+Como NitroSense (su `opMode` y su `dcMode`), el modo se anota **por fuente de
+alimentacion**: en el fichero de estado hay una linea `perfil_ac` y otra
+`perfil_bateria`. Tres piezas lo mantienen al dia, y ninguna recibe rutas ni
+valores de fuera: todas acaban en el mismo helper, que valida otra vez.
+
+```
+   cambias el modo (app, extension, tecla de modo, menu de GNOME)
+              |
+              v
+   /sys/firmware/acpi/platform_profile  avisa del cambio
+              |
+   nitro-gekko-perfil.path  ->  nitro-gekko-restaurar --anotar
+              |                  -> helper anotar_perfil <modo>  (NO escribe)
+              v
+   /var/lib/nitro-gekko/estado:  perfil_ac / perfil_bateria
+
+   enchufas o desenchufas el cargador
+              |
+   98-nitro-gekko-corriente.rules  ->  nitro-gekko-corriente.service
+              |                          -> nitro-gekko-restaurar --corriente
+              v
+   espera 2 s a que el driver haga su propio cambio, y repone el modo
+   anotado para la fuente nueva
+```
+
+- **Por que hace falta el vigilante (`--anotar`)**: no todos los cambios de
+  modo pasan por el helper. `power-profiles-daemon` (y con el, el menu de
+  energia de GNOME y tres de los cinco modos de la extension) escribe el
+  perfil por su cuenta, y la tecla de modo la gira el propio driver. Sin el
+  vigilante, esos cambios no se recordarian.
+- **Por que `anotar_perfil` no escribe nada**: lo lanza un cambio del propio
+  fichero del perfil; si escribiera, volveria a disparar el vigilante.
+- **Por que hace falta reponerlo al enchufar (`--corriente`)**: el driver ya
+  cambia de modo al enchufar y desenchufar, pero lo que recuerda de cada fuente
+  vive en memoria y se pierde al reiniciar (ver la cosa rara 8). Tras un
+  reinicio, el primer desenchufe pondria un modo de hace semanas.
+- **Los ventiladores y el modo**: al anotar Silencioso o Eco para la fuente de
+  ahora se anota tambien `ventiladores = 0,0`, porque el driver los devuelve al
+  automatico. Antes el fichero seguia diciendo «manual» y el siguiente
+  arranque reponia Silencioso **con los ventiladores fijos**, justo la
+  combinacion que NitroSense no permite.
+
+La regla de udev **no abre ningun permiso** y se instala en los dos modos de
+permisos: solo arranca un servicio que corre como root y pasa por el helper.
+
 ### Lo que conviene saber
 
 > **Si dejas los ventiladores en manual, arrancaras en manual.** Es justo lo que
 > se pide de una funcion que recuerda lo ultimo, pero conviene decirlo: el
 > equipo se quedara con ese porcentaje fijo en cada arranque hasta que lo
 > cambies. Se vuelve al automatico desde la propia aplicacion, o poniendo el
-> perfil en Silencioso o Bajo consumo.
+> modo en Silencioso o Eco.
 
 Para ver que ha repuesto, y que no ha podido:
 
 ```bash
 systemctl status nitro-gekko-restaurar.service
 journalctl -u nitro-gekko-restaurar
+journalctl -u nitro-gekko-perfil -u nitro-gekko-corriente   # por fuente
 cat /var/lib/nitro-gekko/estado          # una linea por ajuste
 ```
 
@@ -798,6 +940,7 @@ Para ver que HARIA sin hacerlo, y para desactivarlo del todo:
 ```bash
 sudo /usr/lib/nitro-gekko/nitro-gekko-restaurar --revisar
 sudo systemctl disable nitro-gekko-restaurar.service   # deja de reponer
+sudo systemctl disable --now nitro-gekko-perfil.path   # deja de anotar el modo
 sudo rm /var/lib/nitro-gekko/estado                    # y olvida lo guardado
 ```
 
@@ -907,13 +1050,14 @@ sudo ./packaging/probar-rgb.sh            # lo hace, y restaura al terminar
 
 | | |
 |---|---|
-| **11 estilos listos** | Arcoiris, Gekko, Hielo, Magma, Onda, Respiracion, Meteorito, Destellos, Neon, Blanco fijo, Apagado |
+| **12 estilos listos** | Arcoiris, Gekko, Hielo, Magma, Onda, Respiracion, Meteorito, Destellos, Neon, Blanco fijo, Naranja Nitro (el `#ffa000` de fabrica de NitroSense), Apagado |
 | **8 efectos del firmware** | Fijo · Respiracion · Neon · Onda · Desplazamiento · Zoom · Meteorito · Destellos, con velocidad (0-9), brillo (0-100), direccion (0-2) y color |
 | **Color por zona** | Un color independiente para cada una de las cuatro zonas, con selector de color |
 | **Apagado automatico** | El interruptor que traia NitroSense: teclado siempre encendido, o que se apague solo tras ~30 s sin teclear |
 | **Carga USB apagado** | Umbral de bateria (0 / 10 / 20 / 30 %) por debajo del cual deja de cargar por USB con el portatil apagado |
-| **Calibracion de bateria** | El driver y el helper la aceptan (`nitro-gekko-helper calibracion 0\|1`), pero la aplicacion **no la expone**: un ciclo de calibracion descarga y recarga la bateria entera durante horas y no debe quedar a un clic de distancia |
+| **Calibracion de bateria** | Va en la pestana Sistema, grupo Bateria, **detras de un dialogo** con los avisos de NitroSense y solo con el cargador enchufado: un ciclo descarga y recarga la bateria entera durante horas. Nunca se repone al arrancar |
 | **Sonido de arranque** | Silenciar el sonido de encendido |
+| **Teclas especiales** | Las Sticky Keys de accesibilidad, que NitroSense pone junto al apagado del teclado. Es el ajuste de GNOME, sin contrasena |
 
 Los modos **Onda** y **Desplazamiento** exigen direccion 1 o 2; con 0 el driver
 devuelve `-EINVAL`. La aplicacion lo corrige sola.
@@ -1091,7 +1235,7 @@ Piezas: `packaging/nitro-gekko-helper` va a
 Al helper lo invocan **dos piezas, no una**: la aplicacion y tambien la
 extension de GNOME Shell, para los dos perfiles que `power-profiles-daemon` no
 conoce. Es el mismo ejecutable, la misma accion y la misma interfaz cerrada, y
-de las trece acciones la extension solo usa `perfil`. Lo que si conviene tener
+de las diecisiete acciones la extension solo usa `perfil`. Lo que si conviene tener
 presente es que **la cache de `auth_admin_keep` la comparten las dos**:
 autorizar desde Configuracion rapida deja tambien a la aplicacion sin dialogo
 durante esos minutos.
@@ -1110,17 +1254,20 @@ cualquier proceso del usuario (una pestana del navegador, un juego, un
 usuario no podia saber que ruta se iba a tocar mirando el dialogo.
 
 Hoy lo unico que cruza la frontera de privilegio son **dos cadenas**: un nombre
-de accion de un conjunto cerrado de trece, y un valor. Las rutas son constantes
-del propio fichero del helper.
+de accion de un conjunto cerrado de diecisiete, y un valor. Las rutas son
+constantes del propio fichero del helper.
 
 | Accion | Ruta (constante en el helper) | Valores aceptados |
 |---|---|---|
 | `perfil` | `/sys/firmware/acpi/platform_profile` | uno de los que lista el kernel en `platform_profile_choices` |
+| `perfil_ac`, `perfil_bateria` | la misma, **solo** si la fuente de ahora es esa; si no, solo se anota | los mismos |
+| `anotar_perfil` | **ninguna**: solo anota en el fichero de estado | los mismos |
+| `tecla_modo` | `/sys/module/linuwu_sense/parameters/cycle_gaming_thermal_profile` | `0` o `1` |
 | `pl1` | `intel-rapl:0` y `intel-rapl-mmio:0` `constraint_0_power_limit_uw` | entero decimal 10..65 (vatios) |
 | `bateria` | `acer-wmi-battery/health_mode` | `0` o `1` |
 | `bateria_ec` | `acer-wmi/nitro_sense/battery_limiter` | `0` o `1` |
 | `turbo` | `intel_pstate/no_turbo` | `0` o `1` |
-| `ventiladores` | `acer-wmi/nitro_sense/fan_speed` | `0,0` (automatico) o los dos entre 30 y 100 |
+| `ventiladores` | `acer-wmi/nitro_sense/fan_speed` | cada uno `0` (automatico) o entre 30 y 100 |
 | `overdrive` | `acer-wmi/nitro_sense/lcd_override` | `0` o `1` |
 | `rgb_efecto` | `acer-wmi/four_zoned_kb/four_zone_mode` | `modo,vel,brillo,dir,R,G,B` con rango por campo |
 | `rgb_zonas` | `acer-wmi/four_zoned_kb/per_zone_mode` | 4 colores `RRGGBB` + brillo 0..100 |
@@ -1208,7 +1355,7 @@ aviso de error con el 126.
 
 Lo que **no** cubre: el dialogo es de grano grueso. Una accion polkit se
 resuelve por ejecutable, asi que hay una sola, y quien autoriza «cambiar el
-perfil» esta autorizando, mientras dure la cache, cualquiera de las trece
+perfil» esta autorizando, mientras dure la cache, cualquiera de las diecisiete
 acciones. Por eso el `<message>` de la politica enumera el alcance entero. Lo
 que se puede hacer con esa ventana esta acotado por la tabla de acciones:
 ruido, rendimiento y desgaste de bateria. Ninguna accion da una shell, escribe
@@ -1397,6 +1544,22 @@ leidos de sysfs** (nunca codificados: salen de
 los dos ventiladores dentro del menu, marca `balanced-performance` con un aviso
 y trae un boton «Abrir Nitro Gekko» solo si la aplicacion esta instalada.
 
+Desde el 2026-09-23, y como la aplicacion:
+
+- los modos se llaman como en NitroSense (Silencioso, Equilibrado,
+  Rendimiento, Turbo, Eco);
+- el menu ensena solo los que NitroSense ofreceria: cuatro con cargador, dos
+  con bateria, solo Equilibrado por debajo del 40 %, y siempre el activo. El
+  cargador se relee al abrir el menu y al pulsar el toggle, nunca con un
+  temporizador;
+- cuando el modo cambia **desde fuera** (la tecla de modo, la aplicacion, el
+  menu de energia) lo ensena en el aviso en pantalla de GNOME, como la ventana
+  de NitroSense al pulsar su tecla. La firma `showAll(icono, texto, nivel,
+  maximo)` se comprobo el 2026-09-23 contra el `osdWindow.js` de gnome-shell
+  50.5 (sacado con `gresource extract` de `libshell`); falta verlo en pantalla.
+  Si algun dia la firma no casa, deja una linea en el journal y no hace nada
+  mas.
+
 ### La escalera para cambiar de perfil
 
 Los cinco perfiles se pueden aplicar desde aqui. Se prueban por orden, de lo
@@ -1576,8 +1739,10 @@ src/gekkonitro/     la aplicacion GTK4/libadwaita
                     no importa gi, GTK ni GLib, para poder probarlo sin sesion
                     grafica.  Aqui esta _escribir(), la frontera de privilegio
   window.py         la unica capa que toca widgets. Tres bucles de refresco
+  escenarios.py     los escenarios de NitroSense y el orden en que se aplican.
+                    Python puro, como sysfs.py
   grafica.py        la grafica de RPM con cairo. Sin temporizador propio
-  ajustes.py        dos claves en ~/.config/nitro-gekko/ajustes.json
+  ajustes.py        cuatro claves en ~/.config/nitro-gekko/ajustes.json
   __main__.py       Adw.Application, ventana unica
 extension/          extension de GNOME Shell 50. Funciona sin la aplicacion
 packaging/          helper privilegiado, politica polkit, reglas udev y los
@@ -1645,6 +1810,7 @@ parrafo de «por que» dentro del codigo.
    | `fan_speed` | **0,007 ms** | ciclo de 1 Hz: no es WMI, el driver devuelve dos variables suyas |
    | `battery_limiter` | 4,888 ms | ciclo de 10 s, y solo si no esta el modulo DKMS |
    | `lcd_override` | 5,229 ms | bajo demanda, nunca en un temporizador |
+   | `battery_calibration` | 4,9 ms | bajo demanda: al abrir, tras escribir y al volver a la ventana |
    | `usb_charging` | 6,775 ms | dentro de `leer_teclado()`, bajo demanda |
    | `leer_teclado()` entero | 47 a 53 ms | al abrir la pagina y tras cada cambio |
 
@@ -1676,9 +1842,13 @@ parrafo de «por que» dentro del codigo.
     `0/10/20/30` y nada mas (el driver interpreta en silencio como 0 cualquier
     otro valor, asi que relajar la validacion hace creer al usuario que ha
     puesto un 15 % que en realidad lo desactiva).
-15. **`battery_calibration` no se expone en la interfaz.** El helper la acepta y
-    el driver la tiene, pero un ciclo de calibracion descarga y recarga la
-    bateria entera durante horas y no puede quedar a un clic.
+15. **`battery_calibration` no queda nunca a un clic.** Un ciclo descarga y
+    recarga la bateria entera durante horas. Hasta el 2026-09-23 esta regla
+    decia «no se expone»; ese dia el usuario pidio tenerla como en NitroSense,
+    y se expone **solo asi**: detras de un dialogo con sus avisos, con el
+    cargador enchufado, y sin anotarla nunca para el arranque. Quitar el
+    dialogo, o anadir `calibracion` a `RANURAS` del helper, vuelve a romper la
+    regla.
 16. **Los avisos honestos no se quitan, y los avisos no se convierten en
     abortos.** Cada script tiene decidido si se planta o si sigue, y la
     asimetria es deliberada: `install.sh` avisa y sigue porque solo copia
@@ -1719,6 +1889,19 @@ parrafo de «por que» dentro del codigo.
     96 px y por tanto el unico que cae en el SVG en vez de en un PNG.
     `rsvg-convert` y los navegadores lo dibujan igual de bien, asi que a ojo el
     fichero parece perfecto. `install.sh` lo comprueba antes de instalar.
+22. **`anotar_perfil` no escribe nunca en `/sys`.** Lo lanza
+    `nitro-gekko-perfil.path` cuando cambia `platform_profile`; si escribiera,
+    ese mismo cambio volveria a disparar el vigilante, en bucle. Por lo mismo,
+    nada que corra desde `nitro-gekko-restaurar --anotar` puede escribir el
+    perfil.
+23. **Los nombres de los modos son los de NitroSense**, y su correspondencia con
+    los perfiles del kernel sale del driver, no del sentido comun: `performance`
+    es **Turbo** y `balanced-performance` es **Rendimiento**. La tabla vive en
+    dos sitios que tienen que coincidir: `ETIQUETAS_PERFIL` de
+    `src/gekkonitro/sysfs.py` y `PRESENTACION_PERFILES` de
+    `extension/extension.js`. Lo mismo vale para las reglas de que modos se
+    ofrecen con cargador y con bateria (`perfiles_permitidos()` y
+    `perfilesPermitidos()`).
 
 ### El presupuesto de tiempo
 
@@ -1728,8 +1911,8 @@ El reparto de lecturas de la aplicacion no es una preferencia: sale de medir con
 
 | Ciclo | Periodo | Coste | Que lee |
 |---|---|---|---|
-| `leer_rapido()` | 1 s | 0,6 ms | ventiladores, temperatura, PL1, bateria, frecuencia |
-| `leer_lento()` | 10 s | 10,0 ms | perfil (ACPI) y temperatura de bateria (WMI) |
+| `leer_rapido()` | 1 s | 0,6 ms (igual con lo del 2026-09-23) | ventiladores, temperatura, PL1, bateria, frecuencia, y desde el 2026-09-23 uso de CPU y memoria (`/proc/stat` 0,017 ms, `/proc/meminfo` 0,008 ms) |
+| `leer_lento()` | 10 s | 10,4 ms (10,2 antes del 2026-09-23, medidas juntas) | perfil (ACPI) y temperatura de bateria (WMI), y desde el 2026-09-23 el cargador (`online`, `_PSR` por ACPI, 0,054 ms) y la salud de la bateria (`charge_*` y `cycle_count`, 0,008 ms) |
 | `leer_gpu()` | 5 s, en un hilo | variable | `nvidia-smi`, que despierta la tarjeta |
 | `leer_teclado()` | **bajo demanda** | 47 a 53 ms | los cinco atributos del EC y del RGB |
 
@@ -1801,6 +1984,17 @@ codigo 5 («no eres root») y uno malo en codigo 2:
 ./packaging/nitro-gekko-helper pl1 45   ; echo $?   # 5  -> aceptado
 ./packaging/nitro-gekko-helper pl1 66   ; echo $?   # 2  -> fuera de rango
 ./packaging/nitro-gekko-helper perfil ../../etc/shadow ; echo $?   # 2
+```
+
+El script que repone los ajustes se prueba sin root y sin tocar `/sys`: lee sus
+rutas de variables de entorno pensadas justo para eso (el servicio no las pone,
+asi que en el arranque valen las de siempre). Con un helper falso que solo
+apunte sus argumentos se ve en que orden llamaria a cada accion:
+
+```bash
+HELPER=/tmp/helper-falso ESTADO=/tmp/estado RUTA_PERFIL=/tmp/perfil \
+DIR_POWER_SUPPLY=/tmp/ps ESPERA_CORRIENTE=0 \
+  ./packaging/nitro-gekko-restaurar --corriente
 ```
 
 Y la capa de hardware entera se puede ejercitar desde una consola de texto,
@@ -1931,7 +2125,10 @@ No es una lista de tareas pendientes. Es una lista de cosas decididas:
 | Vatios de CPU en vivo | `energy_uj` esta cerrado por la mitigacion de PLATYPUS y no se va a abrir |
 | Una pestana de audio, o «DTS» | DTS:X Ultra es un APO de Windows en modo usuario: no hay nada en firmware, ni en el EC, ni en WMI, ni en `linuwu_sense`. Duplicar un ecualizador seria un EasyEffects peor. Ver [El sonido](#el-sonido-el-dtsx-ultra-que-traia-windows) |
 | Entradas DMI de modelos que nadie ha probado | convierte la tabla de compatibilidad en una promesa que el proyecto no puede sostener. Ver [Que se sabe de cada modelo](#que-se-sabe-de-cada-modelo) |
-| Calibracion de bateria en la interfaz | horas de descarga y recarga; no puede estar a un clic |
+| Escenarios que se activan solos al abrir un juego | NitroSense lo hace; aqui exigiria un proceso en segundo plano con permiso para cambiar el hardware sin contrasena. Los escenarios se aplican con un clic |
+| Forzar Equilibrado al bajar del 40 % de bateria | lo mismo: NitroSense lo fuerza desde su proceso de fondo. Aqui se ofrece solo Equilibrado, pero nadie cambia el modo por detras |
+| Modo de GPU (MUX), logo de arranque, bloqueo de la tecla Windows, Whisper Mode | NitroSense **no los ofrece en el AN17-51**: su servicio responde que el firmware no los soporta, o sus ajustes del modelo los ocultan |
+| Red, superposicion en juegos, tienda de aplicaciones, limpieza de disco | no son hardware del portatil; GNOME ya tiene lo suyo |
 | `--con-udev` por defecto | quita la validacion del helper y abre seis rutas a cualquier proceso del usuario |
 | Un demonio D-Bus con polkit por metodo | anadiria un proceso privilegiado permanente para ganar granularidad que hoy no hace falta |
 | Perfiles o efectos codificados a mano | se leen del kernel y del driver, que es lo que los hace correctos manana |

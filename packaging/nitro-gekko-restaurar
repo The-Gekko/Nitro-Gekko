@@ -18,6 +18,13 @@
 # a pasar cada linea por el MISMO helper, que la valida otra vez antes de
 # escribirla.  No hay ninguna ruta ni ningun valor que venga de otro sitio.
 #
+# UN MODO CON CARGADOR Y OTRO CON BATERIA
+#
+# Como NitroSense (su opMode y su dcMode), el modo se guarda por separado para
+# cada fuente de alimentacion: ranuras perfil_ac y perfil_bateria.  Al arrancar
+# se repone el de la fuente que haya en ese momento.  La ranura «perfil» de las
+# versiones anteriores se sigue entendiendo, como respaldo.
+#
 # EL ORDEN NO ES ARBITRARIO
 #
 #   1. perfil        primero, porque cambiar de perfil devuelve los
@@ -25,9 +32,27 @@
 #                    hace el propio driver) y hace que el firmware reescriba el
 #                    PL1 por MMIO.  Si se aplicara despues, se llevaria por
 #                    delante los dos siguientes.
-#   2. ventiladores  despues del perfil, para que el perfil no lo deshaga.
+#   2. ventiladores  despues del perfil, para que el perfil no lo deshaga.  Y
+#                    NO se reponen fijos si el perfil es Silencioso o Eco:
+#                    NitroSense bloquea ahi el control de ventiladores.
 #   3. pl1           despues del perfil, por lo mismo.
 #   4. el resto      en cualquier orden: son ajustes del EC y no se pisan.
+#
+# LOS OTROS DOS MODOS
+#
+#   --corriente  lo lanza nitro-gekko-corriente.service cuando se enchufa o se
+#                desenchufa el cargador (regla 98-nitro-gekko-corriente.rules).
+#                Espera a que el driver haga su propio cambio (WMID_AC_EVENT)
+#                y repone el modo anotado para la fuente nueva.  Es el «al
+#                conectar el adaptador de CA, se restaurara el ajuste de modo»
+#                de NitroSense, y hace falta porque el driver solo recuerda el
+#                modo de cada fuente mientras el modulo esta cargado.
+#   --anotar     lo lanza nitro-gekko-perfil.service cada vez que cambia
+#                /sys/firmware/acpi/platform_profile (nitro-gekko-perfil.path).
+#                Anota el modo de ahora en la ranura de su fuente SIN
+#                escribirlo, para que cuenten tambien los cambios que no pasan
+#                por el helper: power-profiles-daemon, la tecla de modo y el
+#                menu de energia de GNOME.
 #
 # Este script NO falla nunca el arranque: si algo no se puede reponer lo dice en
 # el journal y sigue.  Para verlo:  journalctl -u nitro-gekko-restaurar
@@ -39,10 +64,20 @@ ESTADO="${ESTADO:-/var/lib/nitro-gekko/estado}"
 #: Cuanto se espera a que el driver publique sus rutas. En un arranque frio el
 #: modulo puede tardar en registrar el dispositivo de plataforma.
 ESPERA_MAX="${ESPERA_MAX:-30}"
+#: Segundos que se deja al driver para su propio cambio de modo al enchufar o
+#: desenchufar, antes de reponer el nuestro.  El suyo va en el aviso WMI y el
+#: nuestro llega por udev + systemd, que en la practica ya es despues; la
+#: espera es un margen, NO una medida.
+ESPERA_CORRIENTE="${ESPERA_CORRIENTE:-2}"
+RUTA_PERFIL="${RUTA_PERFIL:-/sys/firmware/acpi/platform_profile}"
+DIR_POWER_SUPPLY="${DIR_POWER_SUPPLY:-/sys/class/power_supply}"
 DRY=0
+MODO=arranque
 
 case "${1:-}" in
     --revisar|-n|--dry-run) DRY=1 ;;
+    --corriente) MODO=corriente ;;
+    --anotar) MODO=anotar ;;
     -h|--help|--ayuda)
         awk '/^# /{sub(/^# ?/,""); print} /^set -/{exit}' "$0"
         exit 0 ;;
@@ -52,13 +87,86 @@ esac
 
 registro() { echo "nitro-gekko-restaurar: $*"; }
 
+# Imprime «ac», «bateria» o nada.  Misma regla que fuente_actual() del helper:
+# el nodo con type=Mains, por contenido, y basta con que uno este online.
+fuente_actual() {
+    local nodo tipo online visto=0
+    for nodo in "$DIR_POWER_SUPPLY"/*; do
+        [[ -r "$nodo/type" && -r "$nodo/online" ]] || continue
+        tipo=""; online=""
+        read -r tipo < "$nodo/type" 2>/dev/null || true
+        [[ "$tipo" == "Mains" ]] || continue
+        read -r online < "$nodo/online" 2>/dev/null || true
+        case "$online" in
+            1) echo ac; return 0 ;;
+            0) visto=1 ;;
+        esac
+    done
+    (( visto )) && echo bateria
+    return 0
+}
+
+perfil_de_ahora() {
+    local p=""
+    read -r p < "$RUTA_PERFIL" 2>/dev/null || true
+    printf '%s' "$p"
+}
+
+if [[ ! -x "$HELPER" ]]; then
+    registro "AVISO: no esta $HELPER; no se repone nada"
+    exit 0
+fi
+
+# --------------------------------------------------------------------------
+#  --anotar: apuntar el modo de ahora, sin escribir nada en /sys
+# --------------------------------------------------------------------------
+if [[ "$MODO" == anotar ]]; then
+    actual="$(perfil_de_ahora)"
+    [[ -n "$actual" ]] || exit 0
+    if salida="$("$HELPER" anotar_perfil "$actual" 2>&1)"; then
+        registro "anotado el modo $actual ($(fuente_actual))"
+    else
+        registro "AVISO: no se pudo anotar el modo $actual (codigo $?): $salida"
+    fi
+    exit 0
+fi
+
 if [[ ! -r "$ESTADO" ]]; then
     registro "no hay nada que reponer ($ESTADO no existe todavia)"
     exit 0
 fi
 
-if [[ ! -x "$HELPER" ]]; then
-    registro "AVISO: no esta $HELPER; no se repone nada"
+declare -A ACCION VALOR
+while IFS=$'\t' read -r ranura accion valor; do
+    [[ -n "${ranura:-}" && -n "${accion:-}" ]] || continue
+    ACCION["$ranura"]="$accion"
+    VALOR["$ranura"]="$valor"
+done < "$ESTADO"
+
+# --------------------------------------------------------------------------
+#  --corriente: se ha enchufado o desenchufado el cargador
+# --------------------------------------------------------------------------
+if [[ "$MODO" == corriente ]]; then
+    sleep "$ESPERA_CORRIENTE"
+    fuente="$(fuente_actual)"
+    if [[ -z "$fuente" ]]; then
+        registro "no se sabe si hay cargador; se deja el modo que puso el driver"
+        exit 0
+    fi
+    objetivo="${VALOR[perfil_$fuente]:-}"
+    if [[ -z "$objetivo" ]]; then
+        registro "no hay modo anotado para '$fuente'; se deja el que puso el driver"
+        exit 0
+    fi
+    if [[ "$(perfil_de_ahora)" == "$objetivo" ]]; then
+        registro "con '$fuente' ya esta en $objetivo"
+        exit 0
+    fi
+    if salida="$("$HELPER" perfil "$objetivo" 2>&1)"; then
+        registro "repuesto el modo de '$fuente': $objetivo"
+    else
+        registro "AVISO: no se pudo reponer $objetivo con '$fuente' (codigo $?): $salida"
+    fi
     exit 0
 fi
 
@@ -69,14 +177,14 @@ fi
 if (( ! DRY )); then
     esperados=0
     while (( esperados < ESPERA_MAX )); do
-        [[ -e /sys/firmware/acpi/platform_profile ]] && break
+        [[ -e "$RUTA_PERFIL" ]] && break
         sleep 1
         esperados=$(( esperados + 1 ))
     done
     if (( esperados > 0 )); then
         registro "el perfil de plataforma tardo ${esperados}s en aparecer"
     fi
-    if [[ ! -e /sys/firmware/acpi/platform_profile ]]; then
+    if [[ ! -e "$RUTA_PERFIL" ]]; then
         registro "AVISO: no hay platform_profile despues de ${ESPERA_MAX}s."
         registro "AVISO: comprueba el driver:  dkms status linuwu-sense"
     fi
@@ -85,27 +193,47 @@ fi
 # --------------------------------------------------------------------------
 #  Reponer, en el orden que importa
 # --------------------------------------------------------------------------
-declare -A ACCION VALOR
-while IFS=$'\t' read -r ranura accion valor; do
-    [[ -n "${ranura:-}" && -n "${accion:-}" ]] || continue
-    ACCION["$ranura"]="$accion"
-    VALOR["$ranura"]="$valor"
-done < "$ESTADO"
 
-ORDEN=(perfil ventiladores pl1 bateria turbo overdrive teclado retro_timeout usb_carga sonido_arranque)
+# La ranura del modo depende de la fuente de ahora; la «perfil» de antes queda
+# como respaldo para los ficheros de estado escritos por versiones anteriores.
+fuente="$(fuente_actual)"
+ranura_perfil=perfil
+if [[ -n "$fuente" && -n "${ACCION[perfil_$fuente]:-}" ]]; then
+    ranura_perfil="perfil_$fuente"
+fi
 
+ORDEN=("$ranura_perfil" ventiladores pl1 bateria turbo overdrive teclado \
+       retro_timeout usb_carga sonido_arranque tecla_modo)
+
+perfil_puesto=""
 hechos=0; fallos=0
 for ranura in "${ORDEN[@]}"; do
     accion="${ACCION[$ranura]:-}"
     [[ -n "$accion" ]] || continue
     valor="${VALOR[$ranura]:-}"
+    # El modo de una ranura por fuente se escribe con la accion «perfil», que
+    # aplica Y lo vuelve a anotar en la ranura de la fuente de ahora.  Con
+    # perfil_ac o perfil_bateria el helper solo escribiria si coincide la
+    # fuente, y aqui ya se ha elegido la ranura que coincide.
+    if [[ "$ranura" == perfil* ]]; then
+        accion=perfil
+    fi
+    # NitroSense no deja ventiladores fijos en Silencioso ni en Eco, y el
+    # driver los devuelve al automatico al poner esos dos modos.
+    if [[ "$ranura" == ventiladores && "$valor" != "0,0" \
+          && ( "$perfil_puesto" == quiet || "$perfil_puesto" == low-power ) ]]; then
+        registro "omitido   ventiladores = $valor (en $perfil_puesto van en automatico)"
+        continue
+    fi
     if (( DRY )); then
         registro "haria:  $HELPER $accion $valor"
+        [[ "$ranura" == perfil* ]] && perfil_puesto="$valor"
         continue
     fi
     if salida="$("$HELPER" "$accion" "$valor" 2>&1)"; then
         registro "repuesto  $accion = $valor"
         hechos=$(( hechos + 1 ))
+        [[ "$ranura" == perfil* ]] && perfil_puesto="$valor"
     else
         codigo=$?
         # Codigo 3 = la ruta no existe en este equipo (por ejemplo el RGB sin

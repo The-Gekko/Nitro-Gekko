@@ -1,0 +1,13 @@
+[Unit]
+Description=Anotar el modo termico actual de Nitro Gekko
+Documentation=https://github.com/The-Gekko/Nitro-Gekko
+# La arranca nitro-gekko-perfil.path cada vez que cambia el modo.  Anota el de
+# ahora en la ranura de su fuente de alimentacion, SIN escribir nada en /sys:
+# asi cuentan tambien los cambios que no pasan por el helper
+# (power-profiles-daemon, la tecla de modo, el menu de energia de GNOME).
+ConditionPathIsDirectory=/var/lib/nitro-gekko
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nitro-gekko/nitro-gekko-restaurar --anotar
+SuccessExitStatus=0

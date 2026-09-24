@@ -1,0 +1,10 @@
+# Nitro Gekko: reponer el modo al enchufar o desenchufar el cargador.
+#
+# Se instala SIEMPRE (no solo con --con-udev): no abre ningun permiso, solo
+# arranca nitro-gekko-corriente.service, que corre como root y repone el modo
+# anotado para la fuente nueva pasando por el helper, que lo valida otra vez.
+#
+# ENV{POWER_SUPPLY_TYPE} viene en el propio aviso del kernel, asi que no hace
+# falta leer sysfs.  --no-block porque udev mata los RUN que tardan: el
+# servicio espera unos segundos a que el driver termine su propio cambio.
+SUBSYSTEM=="power_supply", ACTION=="change", ENV{POWER_SUPPLY_TYPE}=="Mains", RUN+="/usr/bin/systemctl --no-block start nitro-gekko-corriente.service"

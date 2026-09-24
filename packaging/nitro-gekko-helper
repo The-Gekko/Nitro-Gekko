@@ -31,6 +31,12 @@ valida contra el propio kernel antes de escribirlo.
     nitro-gekko-helper bateria  <0|1>      # 1 = limitar la carga al 80 %
     nitro-gekko-helper turbo    <0|1>      # 1 = no_turbo (turbo DESACTIVADO)
 
+  El modo para cada fuente de alimentacion (el opMode/dcMode de NitroSense):
+
+    nitro-gekko-helper perfil_ac      <nombre>  # anota; lo aplica si hay cargador
+    nitro-gekko-helper perfil_bateria <nombre>  # anota; lo aplica si no lo hay
+    nitro-gekko-helper anotar_perfil  <nombre>  # SOLO anota, no escribe nada
+
   Teclado y extras del EC (solo con el driver linuwu_sense cargado):
 
     nitro-gekko-helper rgb_efecto      <modo,vel,brillo,dir,R,G,B>
@@ -40,8 +46,9 @@ valida contra el propio kernel antes de escribirlo.
     nitro-gekko-helper calibracion     <0|1>
     nitro-gekko-helper sonido_arranque <0|1>
     nitro-gekko-helper overdrive       <0|1>   # 1 = overdrive del panel
-    nitro-gekko-helper ventiladores    <cpu,gpu>  # 0,0 = automatico
+    nitro-gekko-helper ventiladores    <cpu,gpu>  # 0 = ese en automatico
     nitro-gekko-helper bateria_ec      <0|1>   # limite de carga por el EC
+    nitro-gekko-helper tecla_modo      <0|1>   # 1 = la tecla recorre los modos
 
 === POR QUE EL SHEBANG ES ASI Y NO `#!/usr/bin/env python3` ===
 
@@ -91,6 +98,7 @@ from __future__ import annotations
 # Si algun dia hace falta validar sin aplicar, que sea un argumento de la
 # linea de ordenes y que se rechace cuando geteuid() == 0, no una variable.
 
+import fcntl
 import os
 import stat
 import sys
@@ -130,6 +138,19 @@ VENTILADORES = ACER_WMI / "nitro_sense" / "fan_speed"
 #: fuente_limite_carga() en src/gekkonitro/sysfs.py.
 BATERIA_EC = ACER_WMI / "nitro_sense" / "battery_limiter"
 
+#: Que hace la tecla de modo: 1 recorre los modos, 0 activa y desactiva el
+#: Turbo. Es un parametro del modulo linuwu_sense (0644, solo root escribe), no
+#: un atributo del firmware; ver TECLA_MODO en src/gekkonitro/sysfs.py.
+TECLA_MODO = Path("/sys/module/linuwu_sense/parameters/cycle_gaming_thermal_profile")
+
+#: De aqui SOLO se lee: para saber si hay cargador y anotar el modo en la
+#: ranura de su fuente. Nunca se escribe nada debajo.
+POWER_SUPPLY = Path("/sys/class/power_supply")
+
+#: Los modos que devuelven los ventiladores al automatico: el driver llama a
+#: acer_set_fan_speed(0, 0) al ponerlos (linuwu_sense.c).
+PERFILES_SIN_VENTILADOR_MANUAL = ("quiet", "low-power")
+
 # Rango duro del PL1 en vatios.
 #
 # MINIMO 10 W: por debajo la maquina queda inservible. El abuso realista del
@@ -168,9 +189,12 @@ PL1_MAX_W = 65
 #     otra cosa  -> velocidad fija; y un 0 SUELTO en un campo significa
 #                   "ese ventilador en automatico y el otro fijo".
 #
-# Aqui NO se acepta el 0 suelto: el mismo digito querria decir dos cosas segun
-# lo que valga el otro campo, y una interfaz privilegiada no puede tener eso.
-# O los dos a 0 (automatico), o los dos entre el minimo y 100.
+# Hasta el 2026-09-23 el 0 suelto se rechazaba ("el mismo digito querria decir
+# dos cosas"). Ahora se acepta, por decision del usuario, para que funcione
+# como NitroSense, que tiene una casilla "Auto" por ventilador. La ambiguedad
+# no existe: el minimo manual es FAN_MIN_PCT (30), asi que un 0 SOLO puede
+# significar automatico en ese ventilador, y el driver tiene su rama propia
+# para cada caso ("CUSTOM FAN MODE (CPU)" y "(GPU)").
 #
 # EL MINIMO SI ES UNA MEDIDA, y no protege de lo que parecia.
 #
@@ -378,6 +402,55 @@ def aplicar_perfil(valor: str) -> None:
     escribir(destino, valor)
 
 
+def fuente_actual() -> str | None:
+    """Devuelve 'ac' con cargador, 'bateria' sin el, o None si no se sabe.
+
+    Misma regla que en_corriente() de src/gekkonitro/sysfs.py: el nodo con
+    type=Mains, buscado por contenido (aqui ACAD), y basta con que uno este
+    online. Sin ningun nodo Mains no se adivina: None.
+    """
+    try:
+        nodos = sorted(POWER_SUPPLY.iterdir())
+    except OSError:
+        return None
+    visto = False
+    for nodo in nodos:
+        if leer(nodo / "type") != "Mains":
+            continue
+        online = leer(nodo / "online")
+        if online not in ("0", "1"):
+            continue
+        visto = True
+        if online == "1":
+            return "ac"
+    return "bateria" if visto else None
+
+
+def aplicar_perfil_si(fuente: str):
+    """Aplicador de perfil_ac / perfil_bateria: escribe SOLO si toca ahora.
+
+    Es el opMode/dcMode de NitroSense: el modo de la otra fuente se anota
+    (lo hace registrar(), despues) y se aplica al enchufar o desenchufar, que
+    es cuando lo repone nitro-gekko-restaurar --corriente.
+    """
+
+    def aplicar(valor: str) -> None:
+        if fuente_actual() == fuente:
+            aplicar_perfil(valor)
+
+    return aplicar
+
+
+def no_aplicar(_valor: str) -> None:
+    """Aplicador de anotar_perfil: no escribe nada, solo se registra.
+
+    Lo usa nitro-gekko-restaurar --anotar cuando el perfil ha cambiado por un
+    camino que no pasa por aqui (power-profiles-daemon, la tecla de modo, el
+    menu de energia de GNOME). Por eso NO puede escribir: la escritura
+    dispararia otra vez el vigilante que lo ha llamado.
+    """
+
+
 def validar_pl1(valor: str) -> str:
     vatios = entero(valor)
     if vatios is None:
@@ -490,11 +563,14 @@ def validar_usb_carga(valor: str) -> str:
 
 
 def validar_ventiladores(valor: str) -> str:
-    """Velocidad manual de los ventiladores: "cpu,gpu" en por ciento.
+    """Velocidad de los ventiladores: "cpu,gpu" en por ciento.
 
-    Acepta exactamente dos formas:
-        "0,0"          -> automatico (se lo devuelve al EC)
-        "<n>,<m>"      -> los DOS entre FAN_MIN_PCT y 100
+    Cada campo es 0 (ESE ventilador en automatico) o un entero entre
+    FAN_MIN_PCT y 100:
+        "0,0"          -> los dos en automatico (se lo devuelve al EC)
+        "100,100"      -> maximo
+        "0,<m>"        -> CPU automatico, GPU fija   (como NitroSense)
+        "<n>,<m>"      -> los dos fijos
 
     Se reconstruye la cadena a partir de los dos enteros ya comprobados, como
     todos los validadores de este fichero: lo que llega no se escribe nunca.
@@ -509,21 +585,12 @@ def validar_ventiladores(valor: str) -> str:
             salir(2, f"Velocidad de {cual} invalida: {parte!r}. Se esperaba un entero.")
         numeros.append(n)
     cpu, gpu = numeros
-    if cpu == 0 and gpu == 0:
-        return "0,0"
-    if cpu == 0 or gpu == 0:
-        salir(
-            2,
-            f"Velocidad invalida: {valor!r}. Un 0 suelto significa 'ese ventilador "
-            f"en automatico', que aqui no se acepta: o los dos a 0, o los dos "
-            f"entre {FAN_MIN_PCT} y {FAN_MAX_PCT}.",
-        )
     for n, cual in ((cpu, "CPU"), (gpu, "GPU")):
-        if not (FAN_MIN_PCT <= n <= FAN_MAX_PCT):
+        if n != 0 and not (FAN_MIN_PCT <= n <= FAN_MAX_PCT):
             salir(
                 2,
                 f"Velocidad de {cual} fuera de rango: {n} %. Permitido "
-                f"{FAN_MIN_PCT}..{FAN_MAX_PCT}, o 0,0 para automatico.",
+                f"0 (automatico) o {FAN_MIN_PCT}..{FAN_MAX_PCT}.",
             )
     return f"{cpu},{gpu}"
 
@@ -561,8 +628,11 @@ FICHERO_ESTADO = DIR_ESTADO / "estado"
 #: ranura, para que la ultima gane en vez de acumularse: el teclado se puede
 #: poner por efecto o por zonas, y el limite de carga por el modulo del AUR o
 #: por el EC.
+#:
+#: Las acciones de perfil NO estan aqui: su ranura depende de la fuente de
+#: alimentacion (ver ranura_de()), porque se guarda un modo con cargador y otro
+#: con bateria, como hace NitroSense con su opMode y su dcMode.
 RANURAS = {
-    "perfil": "perfil",
     "pl1": "pl1",
     "bateria": "bateria",
     "bateria_ec": "bateria",
@@ -574,8 +644,25 @@ RANURAS = {
     "retro_timeout": "retro_timeout",
     "usb_carga": "usb_carga",
     "sonido_arranque": "sonido_arranque",
+    "tecla_modo": "tecla_modo",
     # "calibracion" NO esta, y no debe estarlo.
 }
+
+
+def ranura_de(accion: str) -> str | None:
+    """Ranura del fichero de estado para *accion*, o None si no se anota.
+
+    perfil y anotar_perfil van a la ranura de la fuente de AHORA
+    (perfil_ac o perfil_bateria); perfil_ac y perfil_bateria, a la suya
+    siempre. Si no se sabe la fuente, a la ranura "perfil" de antes, que
+    nitro-gekko-restaurar sigue entendiendo.
+    """
+    if accion in ("perfil_ac", "perfil_bateria"):
+        return accion
+    if accion in ("perfil", "anotar_perfil"):
+        fuente = fuente_actual()
+        return "perfil" if fuente is None else f"perfil_{fuente}"
+    return RANURAS.get(accion)
 
 
 def registrar(accion: str, valor: str) -> None:
@@ -585,12 +672,36 @@ def registrar(accion: str, valor: str) -> None:
     cambio del usuario sigue siendo valido y lo unico que se pierde es que se
     reponga en el proximo arranque. Por eso se traga cualquier error, pero se
     dice por stderr para que no sea un fallo mudo.
+
+    DOS REGLAS QUE SALEN DEL DRIVER, NO DE AQUI
+    -------------------------------------------
+    1. Al anotar un modo en la ranura de la fuente de AHORA, si ese modo es
+       quiet o low-power se anota tambien ventiladores = 0,0. El driver los
+       devuelve al automatico al ponerlos, pero sin esto el fichero seguia
+       diciendo "manual" y el siguiente arranque reponia Silencioso CON los
+       ventiladores fijos: justo la combinacion que NitroSense no permite.
+       Reproducido leyendo el codigo el 2026-09-23 (restaurar aplica perfil
+       y despues ventiladores, en ese orden).
+    2. Al anotar perfil_ac o perfil_bateria se borra la ranura "perfil" de
+       antes, para que un valor viejo no reaparezca como respaldo.
+
+    POR QUE HAY CERROJO
+    -------------------
+    Ahora escriben aqui dos procesos que pueden coincidir: el helper que lanza
+    la aplicacion y el que lanza nitro-gekko-perfil.service al notar el cambio
+    que ese mismo helper acaba de hacer. Los dos leen, modifican y reemplazan
+    el fichero; sin cerrojo, el segundo podia pisar lo que el primero anotaba.
+    Se bloquea el DIRECTORIO (flock admite descriptores de directorio en
+    Linux), asi no hace falta crear ningun fichero de cerrojo.
     """
-    ranura = RANURAS.get(accion)
+    ranura = ranura_de(accion)
     if ranura is None:
         return
+    fd = None
     try:
         DIR_ESTADO.mkdir(mode=0o755, parents=True, exist_ok=True)
+        fd = os.open(DIR_ESTADO, os.O_RDONLY | os.O_DIRECTORY)
+        fcntl.flock(fd, fcntl.LOCK_EX)
         lineas = {}
         if FICHERO_ESTADO.is_file():
             for linea in FICHERO_ESTADO.read_text(encoding="ascii").splitlines():
@@ -598,6 +709,14 @@ def registrar(accion: str, valor: str) -> None:
                 if len(partes) == 3:
                     lineas[partes[0]] = partes
         lineas[ranura] = [ranura, accion, valor]
+        if ranura in ("perfil_ac", "perfil_bateria"):
+            lineas.pop("perfil", None)
+            ahora = fuente_actual()
+            if (ahora is not None and ranura == f"perfil_{ahora}"
+                    and valor in PERFILES_SIN_VENTILADOR_MANUAL):
+                lineas["ventiladores"] = ["ventiladores", "ventiladores", "0,0"]
+        elif ranura == "perfil" and valor in PERFILES_SIN_VENTILADOR_MANUAL:
+            lineas["ventiladores"] = ["ventiladores", "ventiladores", "0,0"]
         # Reemplazo atomico: si se corta la luz a mitad, o esta el fichero
         # entero de antes o el entero de ahora, nunca uno a medias.
         temporal = FICHERO_ESTADO.with_suffix(".nuevo")
@@ -608,12 +727,25 @@ def registrar(accion: str, valor: str) -> None:
         os.replace(temporal, FICHERO_ESTADO)
     except OSError as err:
         print(f"aviso: no se pudo registrar el estado: {err}", file=sys.stderr)
+    finally:
+        # Cerrar el descriptor suelta el cerrojo.
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 #: accion -> (validador, aplicador). El validador devuelve el valor ya
 #: normalizado que recibira el aplicador.
 ACCIONES = {
     "perfil": (validar_perfil, aplicar_perfil),
+    # El modo de cada fuente de alimentacion, y el que solo se anota. Ver
+    # aplicar_perfil_si() y no_aplicar(): ninguno de los tres recibe rutas ni
+    # escribe nada distinto de lo que ya escribe "perfil".
+    "perfil_ac": (validar_perfil, aplicar_perfil_si("ac")),
+    "perfil_bateria": (validar_perfil, aplicar_perfil_si("bateria")),
+    "anotar_perfil": (validar_perfil, no_aplicar),
     "pl1": (validar_pl1, aplicar_pl1),
     "bateria": (validar_binario("bateria"), aplicar_bateria),
     "turbo": (validar_binario("turbo"), aplicar_turbo),
@@ -627,6 +759,9 @@ ACCIONES = {
     "overdrive": (validar_binario("overdrive"), aplicar_ruta_binaria(OVERDRIVE)),
     "ventiladores": (validar_ventiladores, aplicar_ruta_binaria(VENTILADORES)),
     "bateria_ec": (validar_binario("bateria_ec"), aplicar_ruta_binaria(BATERIA_EC)),
+    # Un parametro de modulo en /sys/module, no un atributo del firmware. Se
+    # escribe 0/1, que param_set_bool() acepta igual que N/Y.
+    "tecla_modo": (validar_binario("tecla_modo"), aplicar_ruta_binaria(TECLA_MODO)),
 }
 
 

@@ -101,10 +101,18 @@ const PERFIL_CON_BUG_PPD = 'balanced-performance';
 
 /* Nombres bonitos e iconos por perfil. Es sólo una tabla de presentación: la
  * lista real de perfiles sale de 'choices', y cualquier perfil que aparezca ahí
- * y no esté en esta tabla se muestra igualmente con un nombre derivado. */
+ * y no esté en esta tabla se muestra igualmente con un nombre derivado.
+ *
+ * Los nombres son LOS DE NITROSENSE (MUI_Operating_Mode_* en su traducción al
+ * español), para que el mismo modo se llame igual en Windows y aquí. Antes
+ * eran traducciones literales, y la de «performance» confundía: ese perfil es
+ * el Turbo de NitroSense, no su Rendimiento. La correspondencia la dice el
+ * driver (acer_predator_v4_platform_profile_get en linuwu_sense.c): TURBO ->
+ * performance, PERFORMANCE -> balanced-performance, ECO -> low-power. Es la
+ * misma tabla que ETIQUETAS_PERFIL de src/gekkonitro/sysfs.py. */
 const PRESENTACION_PERFILES = {
     'low-power': {
-        nombre: 'Bajo consumo',
+        nombre: 'Eco',
         icono: 'power-profile-power-saver-symbolic',
         rpmTipicas: 1663,
     },
@@ -119,16 +127,34 @@ const PRESENTACION_PERFILES = {
         rpmTipicas: 2200,
     },
     'balanced-performance': {
-        nombre: 'Equilibrado con rendimiento',
+        nombre: 'Rendimiento',
         icono: 'power-profile-performance-symbolic',
         rpmTipicas: 2377,
     },
     'performance': {
-        nombre: 'Rendimiento',
+        nombre: 'Turbo',
         icono: 'power-profile-performance-symbolic',
         rpmTipicas: 3237,
     },
 };
+
+/* De aquí se lee si hay cargador y cuánta batería queda, para ofrecer los
+ * mismos modos que NitroSense. Sólo se lee al abrir el menú y al pulsar el
+ * toggle: ningún temporizador. */
+const RUTA_FUENTES = '/sys/class/power_supply';
+
+/* Los modos que NitroSense ofrece con batería (onBatteryPowerMode: DEFAULT y
+ * ECO). El driver rechaza los demás sin cargador con «operación no
+ * soportada», así que ofrecerlos sólo servía para sacar un error. */
+const PERFILES_CON_BATERIA = ['balanced', 'low-power'];
+
+/* El modo que NitroSense sólo ofrece con batería (onACMode filtra ECO). El
+ * driver sí lo acepta con cargador; se oculta por decisión del usuario, para
+ * que funcione como en Windows. */
+const PERFIL_SOLO_BATERIA = 'low-power';
+
+/* Por debajo de esta carga NitroSense deja el modo en Equilibrado. */
+const BATERIA_MINIMA_MODOS = 40;
 
 const PRESENTACION_POR_DEFECTO = {
     nombre: 'Personalizado',
@@ -303,6 +329,86 @@ async function listarDirectorio(ruta, cancelable) {
     }
 
     return nombres;
+}
+
+// ---------------------------------------------------------------------------
+// Cargador y batería: qué modos se ofrecen, como en NitroSense
+// ---------------------------------------------------------------------------
+
+/**
+ * Lee si hay cargador y la carga de la batería interna.
+ *
+ * Por CONTENIDO, igual que src/gekkonitro/sysfs.py: el cargador es el nodo con
+ * type=Mains (aquí «ACAD») y basta con que uno esté online; la batería es la
+ * «BAT*» con type=Battery que no sea de un periférico (scope=Device, que es
+ * como sale la batería de un ratón inalámbrico). Si algo no se deja leer, se
+ * devuelve null en ese campo y no se filtra nada por él.
+ *
+ * @param {?Gio.Cancellable} cancelable cancelable para abortar al desactivar
+ * @returns {Promise<{corriente: ?boolean, capacidad: ?number}>} lo leído
+ */
+async function leerFuente(cancelable) {
+    const sinDato = {corriente: null, capacidad: null};
+    let nombres;
+    try {
+        nombres = await listarDirectorio(RUTA_FUENTES, cancelable);
+    } catch (error) {
+        if (esCancelacion(error))
+            throw error;
+        return sinDato;
+    }
+
+    // Un fichero que no se deja leer vale como vacío; una cancelación, no.
+    const leerOVacio = ruta => leerTexto(ruta, cancelable).catch(error => {
+        if (esCancelacion(error))
+            throw error;
+        return '';
+    });
+
+    let corriente = null;
+    let capacidad = null;
+    for (const nombre of [...nombres].sort()) {
+        const base = `${RUTA_FUENTES}/${nombre}`;
+        const tipo = await leerOVacio(`${base}/type`);
+        if (tipo === 'Mains') {
+            const online = await leerOVacio(`${base}/online`);
+            if (online === '1')
+                corriente = true;
+            else if (online === '0' && corriente === null)
+                corriente = false;
+        } else if (tipo === 'Battery' && capacidad === null && nombre.startsWith('BAT')) {
+            if (await leerOVacio(`${base}/scope`) === 'Device')
+                continue;
+            const valor = parseInt(await leerOVacio(`${base}/capacity`), 10);
+            if (Number.isFinite(valor))
+                capacidad = valor;
+        }
+    }
+    return {corriente, capacidad};
+}
+
+/**
+ * Los modos que NitroSense ofrecería ahora, en el orden de 'choices'.
+ *
+ * Misma regla que perfiles_permitidos() de src/gekkonitro/sysfs.py: con
+ * cargador todos menos Eco; con batería, Equilibrado y Eco; con menos del 40 %
+ * de batería, sólo esos dos también con cargador. Sin saber si hay cargador no
+ * se filtra, y si el filtro lo deja todo vacío (otro modelo, otros nombres) se
+ * devuelven todos: un menú vacío no sirve para nada.
+ *
+ * @param {string[]} perfiles lista de 'choices'
+ * @param {{corriente: ?boolean, capacidad: ?number}} fuente lo de leerFuente()
+ * @returns {string[]} perfiles que se ofrecen
+ */
+function perfilesPermitidos(perfiles, fuente) {
+    if (fuente.corriente === null)
+        return [...perfiles];
+    let permitidos = fuente.corriente
+        ? perfiles.filter(p => p !== PERFIL_SOLO_BATERIA)
+        : perfiles.filter(p => PERFILES_CON_BATERIA.includes(p));
+    if (fuente.capacidad !== null && fuente.capacidad < BATERIA_MINIMA_MODOS)
+        permitidos = permitidos.filter(p => PERFILES_CON_BATERIA.includes(p));
+    return permitidos.length > 0 ? permitidos : [...perfiles];
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +765,10 @@ class ToggleNitroGekko extends QuickMenuToggle {
         this._cancelable = new Gio.Cancellable();
         this._elementosPerfil = new Map();
         this._perfilActivo = null;
+        // Lista de 'choices' y lo último leído del cargador y la batería: con
+        // eso se decide qué modos se enseñan, como en NitroSense.
+        this._perfiles = [];
+        this._fuente = {corriente: null, capacidad: null};
         // Ambos se recalculan con la lista real de 'choices' en cuanto se lee;
         // esto es sólo el valor de arranque por si el menú se pinta antes.
         this._perfilNeutro = PERFIL_NEUTRO_PREFERIDO;
@@ -715,12 +825,14 @@ class ToggleNitroGekko extends QuickMenuToggle {
 
         // Pulsar el cuerpo del toggle alterna entre el perfil neutro y el
         // último perfil "rápido" elegido, igual que hace el toggle de energía
-        // de GNOME.
+        // de GNOME. Con batería el «rápido» (Turbo) no existe; ver
+        // _alPulsarCuerpo().
         this.connect('clicked', () => {
-            const destino = this.checked
-                ? this._perfilNeutro
-                : this._ultimoPerfilRapido;
-            this._lanzarCambioDePerfil(destino);
+            this._alPulsarCuerpo().catch(error => {
+                if (esCancelacion(error))
+                    return;
+                console.error(`Nitro Gekko: fallo al pulsar el toggle: ${error}`);
+            });
         });
 
         // El temporizador de RPM vive y muere con el menú. Con el menú cerrado
@@ -728,8 +840,11 @@ class ToggleNitroGekko extends QuickMenuToggle {
         this.menu.connect('open-state-changed', (menu, abierto) => {
             if (abierto) {
                 // Al abrir, refrescamos también el perfil por si ha cambiado
-                // desde fuera y el vigilante de ficheros no se enteró.
+                // desde fuera y el vigilante de ficheros no se enteró. Y el
+                // cargador: el driver cambia de modo solo al enchufarlo y ese
+                // cambio no avisa por el fichero.
                 this._lanzarRelectura();
+                this._lanzarActualizacionFuente();
                 this._sincronizarBotonAplicacion();
                 this._arrancarRefrescoRpm();
             } else {
@@ -781,7 +896,64 @@ class ToggleNitroGekko extends QuickMenuToggle {
         // Así el subtítulo se mantiene al día sin ningún temporizador.
         this._montarVigilanteDePerfil();
 
+        this._lanzarActualizacionFuente();
         await this._leerPerfilActivo();
+    }
+
+    /**
+     * Relee el cargador y la batería y vuelve a filtrar los modos del menú.
+     *
+     * @returns {Promise<void>} promesa de la lectura
+     */
+    async _actualizarFuente() {
+        this._fuente = await leerFuente(this._cancelable);
+        this._filtrarModos();
+    }
+
+    /**
+     * Lo mismo, desde un manejador de señal: sin promesas sueltas.
+     *
+     * @returns {void} no devuelve nada a propósito: el que llama es una señal
+     */
+    _lanzarActualizacionFuente() {
+        this._actualizarFuente().catch(error => {
+            if (esCancelacion(error))
+                return;
+            console.warn(`Nitro Gekko: no se pudo leer el cargador: ${error}`);
+        });
+    }
+
+    /**
+     * Enseña sólo los modos que NitroSense ofrecería ahora, y siempre el
+     * activo aunque no lo esté: un menú que no puede marcar el modo real le
+     * mentiría al usuario.
+     */
+    _filtrarModos() {
+        const permitidos = perfilesPermitidos(this._perfiles, this._fuente);
+        for (const [id, elemento] of this._elementosPerfil)
+            elemento.visible = permitidos.includes(id) || id === this._perfilActivo;
+    }
+
+    /**
+     * Pulsación en el cuerpo del toggle: alterna entre el neutro y el rápido.
+     *
+     * Se relee el cargador antes de decidir, porque puede llevar horas sin
+     * abrirse el menú. Si el destino no se ofrece ahora (Turbo con batería, o
+     * Eco con cargador), se va al modo permitido más potente que no sea el de
+     * ahora: con batería eso alterna Equilibrado y Eco, que es lo que hace la
+     * tecla de modo en esa situación.
+     *
+     * @returns {Promise<void>} promesa del cambio
+     */
+    async _alPulsarCuerpo() {
+        await this._actualizarFuente();
+        let destino = this.checked ? this._perfilNeutro : this._ultimoPerfilRapido;
+        const permitidos = perfilesPermitidos(this._perfiles, this._fuente);
+        if (!permitidos.includes(destino)) {
+            destino = [...permitidos].reverse().find(p => p !== this._perfilActivo) ??
+                this._perfilNeutro;
+        }
+        this._lanzarCambioDePerfil(destino);
     }
 
     /**
@@ -792,6 +964,7 @@ class ToggleNitroGekko extends QuickMenuToggle {
     _construirMenuPerfiles(perfiles) {
         this._seccionPerfiles.removeAll();
         this._elementosPerfil.clear();
+        this._perfiles = [...perfiles];
 
         // El perfil neutro y el «rápido» salen de la lista REAL del kernel, no
         // de una constante: si un día 'balanced' o 'performance' no existieran,
@@ -871,8 +1044,11 @@ class ToggleNitroGekko extends QuickMenuToggle {
             const fichero = Gio.File.new_for_path(RUTA_PERFIL);
             this._vigilanteDePerfil = fichero.monitor_file(
                 Gio.FileMonitorFlags.NONE, this._cancelable);
+            // Con aviso en pantalla: si el cambio no lo ha hecho esta
+            // extensión (la tecla de modo, la aplicación, GNOME), se enseña
+            // el modo nuevo, como la ventana de NitroSense al pulsar su tecla.
             this._vigilanteDePerfil.connect(
-                'changed', () => this._lanzarRelectura());
+                'changed', () => this._lanzarRelectura(true));
         } catch (error) {
             // Si el vigilante no se puede montar no es fatal: el perfil se
             // relee igualmente cada vez que se abre el menú.
@@ -896,10 +1072,12 @@ class ToggleNitroGekko extends QuickMenuToggle {
      * usuario haya pedido, y el vigilante volverá a avisar. Con el aviso en el
      * journal basta.
      *
+     * @param {boolean} avisar true si un cambio ajeno debe enseñarse en
+     *   pantalla (sólo lo pide el vigilante de ficheros)
      * @returns {void} no devuelve nada a propósito: el que llama es una señal
      */
-    _lanzarRelectura() {
-        this._leerPerfilActivo().catch(error => {
+    _lanzarRelectura(avisar = false) {
+        this._leerPerfilActivo(avisar).catch(error => {
             if (esCancelacion(error))
                 return;
             console.error(`Nitro Gekko: fallo al releer el perfil: ${error}`);
@@ -913,9 +1091,11 @@ class ToggleNitroGekko extends QuickMenuToggle {
      * para que quien haya pedido un cambio se entere de que la interfaz no se
      * pudo actualizar. Por eso las señales pasan por _lanzarRelectura().
      *
+     * @param {boolean} avisar enseñar en pantalla el modo nuevo si ha cambiado
+     *   sin que lo pidiera esta extensión
      * @returns {Promise<void>} promesa de la lectura
      */
-    async _leerPerfilActivo() {
+    async _leerPerfilActivo(avisar = false) {
         // El vigilante de ficheros dispara dos veces por cambio (CHANGED y
         // CHANGES_DONE_HINT) y la lectura confirmada tarda unos ms, así que
         // dos relecturas se pueden solapar. Sólo la última pinta.
@@ -940,8 +1120,45 @@ class ToggleNitroGekko extends QuickMenuToggle {
             return;
         }
 
+        // Un cambio pedido por esta extensión ya puso _perfilActivo por
+        // adelantado (ver _aplicarPerfil), así que aquí no se ve como cambio y
+        // no sale aviso. Tampoco en la primera lectura, que no es un cambio.
+        const anterior = this._perfilActivo;
         this._perfilActivo = perfil;
         this._sincronizar();
+        if (avisar && anterior !== null && anterior !== perfil)
+            this._avisarCambioDeModo(perfil);
+    }
+
+    /**
+     * Enseña el modo nuevo en el aviso en pantalla (OSD) de GNOME.
+     *
+     * Es lo que hace NitroSense al pulsar la tecla de modo: una ventana con el
+     * modo al que se ha pasado. Aquí lo gira el propio driver
+     * (acer_thermal_profile_change), que avisa por el fichero, y la extensión
+     * lo enseña.
+     *
+     * showAll(icono, texto, nivel, máximo) es la firma de osdWindow.js desde
+     * GNOME 46 (antes era show(monitor, ...)). Comprobada el 2026-09-23 contra
+     * el osdWindow.js de gnome-shell 50.5, sacado de libshell con gresource:
+     * un nivel null oculta la barra, igual que hace el propio cancel(). Falta
+     * verlo en pantalla. Se prueban las dos y, si ninguna casa, se deja una
+     * línea en el journal y no pasa nada más. Nunca debe romper el toggle.
+     *
+     * @param {string} perfil identificador crudo del kernel
+     */
+    _avisarCambioDeModo(perfil) {
+        const {nombre, icono} = presentacionDe(perfil);
+        try {
+            const gicon = new Gio.ThemedIcon({name: icono});
+            const osd = Main.osdWindowManager;
+            if (typeof osd?.showAll === 'function')
+                osd.showAll(gicon, nombre, null, null);
+            else if (typeof osd?.show === 'function')
+                osd.show(-1, gicon, nombre, null, null);
+        } catch (error) {
+            console.warn(`Nitro Gekko: no se pudo enseñar el modo en pantalla: ${error}`);
+        }
     }
 
     /**
@@ -969,6 +1186,8 @@ class ToggleNitroGekko extends QuickMenuToggle {
         }
 
         this._avisoPpd.visible = perfil === PERFIL_CON_BUG_PPD;
+        // El modo activo se enseña siempre, aunque no se ofrezca ahora.
+        this._filtrarModos();
     }
 
     // -- Cambio de perfil ----------------------------------------------------

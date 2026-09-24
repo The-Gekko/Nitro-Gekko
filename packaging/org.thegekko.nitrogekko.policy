@@ -39,10 +39,11 @@
   Aqui se ha elegido un solo helper con una interfaz cerrada porque la
   seguridad real no la da la granularidad de la accion, sino que el helper
   NO acepta rutas: cruza la frontera de privilegio un nombre de accion de un
-  conjunto cerrado de trece y un valor que se valida contra el propio kernel
-  antes de escribirlo. La granularidad de gamemode compra "este proceso
-  puede tocar el gobernador pero no la GPU"; aqui las trece acciones son la
-  misma aplicacion y el mismo usuario, asi que separarlas no cambiaria quien
+  conjunto cerrado (diecisiete desde el 2026-09-23, la lista ACCIONES del
+  helper) y un valor que se valida contra el propio kernel antes de
+  escribirlo. La granularidad de gamemode compra "este proceso puede tocar
+  el gobernador pero no la GPU"; aqui todas las acciones son la misma
+  aplicacion y el mismo usuario, asi que separarlas no cambiaria quien
   puede hacer que.
 
   Lo que si cuesta la accion unica, y hay que decirlo: la autorizacion es de
@@ -84,8 +85,8 @@
   <action id="org.thegekko.nitrogekko.aplicar">
     <description xml:lang="es">Aplicar ajustes de hardware del portatil</description>
     <description>Apply laptop hardware settings</description>
-    <message xml:lang="es">Se necesita autenticacion para cambiar los ajustes de hardware del portatil: perfil termico, limite de potencia de la CPU (PL1), Turbo Boost, velocidad de los ventiladores, limite de carga y calibracion de la bateria, teclado retroiluminado, carga por USB con el equipo apagado, overdrive del panel y sonido de arranque.</message>
-    <message>Authentication is required to change the laptop hardware settings: thermal profile, CPU power limit (PL1), Turbo Boost, fan speed, battery charge limit and calibration, keyboard backlight, USB charging while powered off, panel overdrive, and startup sound.</message>
+    <message xml:lang="es">Se necesita autenticacion para cambiar los ajustes de hardware del portatil: modo del sistema con cargador y con bateria, que hace la tecla de modo, limite de potencia de la CPU (PL1), Turbo Boost, velocidad de los ventiladores, limite de carga y calibracion de la bateria, teclado retroiluminado, carga por USB con el equipo apagado, overdrive del panel y sonido de arranque.</message>
+    <message>Authentication is required to change the laptop hardware settings: system mode on AC and on battery, mode key behavior, CPU power limit (PL1), Turbo Boost, fan speed, battery charge limit and calibration, keyboard backlight, USB charging while powered off, panel overdrive, and startup sound.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

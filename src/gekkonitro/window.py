@@ -3,8 +3,16 @@
 AdwApplicationWindow -> AdwToastOverlay -> AdwToolbarView -> AdwHeaderBar +
 AdwViewStack con dos AdwPreferencesPage:
 
-    «Sistema»  perfil termico, ventiladores, potencia, bateria, temperaturas
+    «Sistema»  escenarios, modo del sistema, ventiladores, potencia, bateria,
+               pantalla, supervision
     «Teclado»  estilos, efecto propio, color por zona, comportamiento
+
+Desde el 2026-09-23 la ventana imita a NitroSense 5.0 donde el hardware lo
+permite: los mismos nombres de modo, los modos que se ofrecen con cargador y
+con bateria, ventiladores Automatico/Maximo/Personalizado, la tecla de modo,
+los escenarios, las teclas especiales y la calibracion de la bateria.  Lo que
+se copio y lo que no, con el porque, esta en el README («NitroSense y Nitro
+Gekko, funcion por funcion»).
 
 La pagina de teclado SOLO se anade si el driver linuwu_sense esta cargado; sin
 el, la ventana ensena la pagina de sistema sola, sin conmutador ni pestanas.
@@ -26,9 +34,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import sysfs  # noqa: E402
+from . import escenarios, sysfs  # noqa: E402
 from .ajustes import Ajustes  # noqa: E402
 from .grafica import GraficaRPM  # noqa: E402
 
@@ -69,27 +77,61 @@ AVISO_BP = (
     "hasta que elijas otro perfil."
 )
 
-#: Aviso del control manual de ventiladores.  Dice las tres cosas que hay que
-#: saber y ninguna que no se pueda sostener: se vuelve al automatico por dos
-#: caminos, y NO sobrevive a un reinicio.
+#: Aviso del control de ventiladores.  Dice las cosas que hay que saber y
+#: ninguna que no se pueda sostener: como se vuelve al automatico, y que lo
+#: que dejes puesto se repone al arrancar.
 AVISO_VENTILADORES = (
-    "Con el control manual los ventiladores dejan de responder a la "
-    "temperatura: giran al porcentaje que pongas.\n\n"
-    "Se vuelve al automatico apagando este interruptor, y tambien poniendo el "
-    "perfil en Silencioso o Bajo consumo, porque el propio driver se lo "
-    "devuelve al EC.\n\n"
-    "No sobrevive a un reinicio: el driver guarda el estado al descargarse el "
-    "modulo, no al apagar, asi que lo que reaparezca puede ser un valor viejo."
+    "En Maximo y en Personalizado los ventiladores dejan de responder a la "
+    "temperatura: giran al porcentaje que pongas. «Auto» deja ese ventilador "
+    "en manos del EC.\n\n"
+    "Se vuelve al automatico eligiendo Automatico, y tambien poniendo el modo "
+    "en Silencioso o Eco, porque el propio driver se lo devuelve al EC. En esos "
+    "dos modos el control queda bloqueado, igual que en NitroSense.\n\n"
+    "Lo que dejes puesto se repone al arrancar. Por debajo de ~25 % el EC no "
+    "baja de ~2590 rpm, asi que el manual no deja el equipo mas silencioso que "
+    "el automatico: sirve para forzar refrigeracion."
 )
 
-#: Subtitulo de la fila de control manual, segun como este.  Son dos porque uno
-#: solo describia siempre el mismo estado: con el interruptor encendido seguia
-#: diciendo «Apagado: los lleva el EC», o sea justo lo contrario de lo que
-#: pasaba.  Una fila que afirma lo que no es no sirve de nada.
-FAN_MANUAL_APAGADO = "Apagado: los lleva el EC segun la temperatura."
-FAN_MANUAL_ENCENDIDO = (
-    "Encendido: giran al porcentaje que pongas. Vuelve solo al automatico si "
-    "pasas el perfil a Silencioso o Bajo consumo."
+#: Opciones del control de ventiladores, en el orden del desplegable.  Son los
+#: tres modos de NitroSense (FAN_MODE Auto/Max/Custom); el identificador es el
+#: que devuelve sysfs.modo_ventiladores().
+MODOS_VENTILADOR = (
+    ("auto", "Automatico"),
+    ("max", "Maximo"),
+    ("personalizado", "Personalizado"),
+)
+
+#: Subtitulo del control de ventiladores segun su estado REAL.  Uno por estado,
+#: y no uno fijo: una version anterior seguia diciendo «Apagado: los lleva el
+#: EC» con el control manual encendido, o sea lo contrario de lo que pasaba.
+SUBTITULO_FAN = {
+    "auto": "Los lleva el EC segun la temperatura.",
+    "max": "Los dos al maximo.",
+    "personalizado": "Giran al porcentaje que pongas; «Auto» deja ese en manos del EC.",
+}
+FAN_BLOQUEADO = (
+    "Bloqueado en Silencioso y Eco, igual que en NitroSense: en esos modos el "
+    "driver devuelve los ventiladores al automatico."
+)
+
+#: Opciones de la tecla de modo, en el orden del desplegable, con el valor del
+#: parametro del modulo (True = recorre los modos).  Son las dos de NitroSense.
+OPCIONES_TECLA_MODO = (
+    (True, "Recorre los modos"),
+    (False, "Turbo si o no"),
+)
+
+#: Avisos de la calibracion, copiados de los de NitroSense en espanol
+#: (MUI_Battery_Calibration_DESC*): son los que ya conoce quien la haya usado
+#: en Windows, y dicen lo que de verdad pasa.
+AVISO_CALIBRACION = (
+    "La calibracion carga y descarga la bateria entera y tarda varias horas. "
+    "Se recomienda cada 3 meses.\n\n"
+    "Antes de empezar:\n"
+    "  · el cargador tiene que estar conectado, y no lo desconectes durante "
+    "el proceso;\n"
+    "  · cierra el resto de ventanas y no ejecutes otras aplicaciones.\n\n"
+    "Se puede detener desde aqui mismo."
 )
 
 #: Subtitulo cuando el driver no publica la velocidad de los ventiladores.
@@ -172,12 +214,27 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._hw_salud: bool | None = None
         self._hw_turbo: bool | None = None
         self._hw_pl1_w: float | None = None
-        self._hw_fan_manual: bool | None = None
-        self._hw_fan_cpu: int | None = None
-        self._hw_fan_gpu: int | None = None
+        #: fan_speed tal cual lo devuelve el driver: (cpu, gpu), 0 = automatico.
+        self._hw_fan: tuple[int, int] | None = None
         self._hw_overdrive: bool | None = None
+        self._hw_tecla_modo: bool | None = None
+        self._hw_calibracion: bool | None = None
         self._id_fan: int | None = None
+        #: Una escritura de ventiladores esperando al dialogo de contrasena.
+        #: Mientras dure, el tic de 1 Hz no devuelve los controles al valor
+        #: viejo del hardware (el usuario veria su eleccion deshacerse sola).
+        self._fan_en_vuelo = False
         self._gpu_consultando = False
+
+        # Lo que decide que modos se ofrecen, como en NitroSense: si hay
+        # cargador (ciclo de 10 s) y la carga de la bateria (ciclo de 1 s).
+        self._corriente: bool | None = None
+        self._bat_capacidad: int | None = None
+        #: Los modos que ensena AHORA el desplegable, en su orden.  El indice
+        #: del desplegable se traduce con esta lista, no con la de 'choices'.
+        self._perfiles_visibles: list[str] = []
+        #: Un escenario aplicandose (varios pasos por pkexec en un hilo).
+        self._aplicando_escenario = False
 
         self._toasts = Adw.ToastOverlay()
         self.set_content(self._toasts)
@@ -251,7 +308,15 @@ class VentanaNitro(Adw.ApplicationWindow):
             self._notificar("Sigue sin detectarse el hardware del Acer.")
 
     def _construir_interfaz(self) -> Gtk.Widget:
+        # Antes de construir nada: que hay en este equipo.  Los escenarios y el
+        # selector de modo lo necesitan desde el primer pintado.  El cargador
+        # se lee aqui una vez (_PSR por ACPI, 0,054 ms) y despues cada 10 s.
+        self._hay_teclado = self._control.hay_teclado_rgb()
+        self._hay_fan_manual = self._control.hay_ventiladores_manuales()
+        self._corriente = sysfs.en_corriente()
+
         pagina = Adw.PreferencesPage()
+        pagina.add(self._grupo_escenarios())
         pagina.add(self._grupo_perfil())
         pagina.add(self._grupo_ventiladores())
         pagina.add(self._grupo_potencia())
@@ -262,13 +327,19 @@ class VentanaNitro(Adw.ApplicationWindow):
         # La pagina de teclado solo existe si el driver linuwu_sense esta
         # cargado. Con el acer_wmi del kernel se omite entera, en vez de
         # ensenar una pestana llena de controles en gris que no explican nada.
-        self._hay_teclado = self._control.hay_teclado_rgb()
         if not self._hay_teclado:
             # ...pero omitirla EN SILENCIO deja tirado a quien sabe que su
             # portatil tiene teclado RGB y no encuentra donde se toca. Una
             # pestana que no esta no se puede pulsar para preguntar por que no
             # esta, asi que la explicacion va aqui, en la pagina que si se ve.
             pagina.add(self._grupo_sin_teclado())
+            # Las teclas especiales no dependen del driver (son un ajuste de
+            # GNOME), asi que sin pestana de teclado van aqui.
+            fila = self._fila_teclas_especiales()
+            if fila is not None:
+                grupo = Adw.PreferencesGroup(title="Teclado")
+                grupo.add(fila)
+                pagina.add(grupo)
 
         vista = Adw.ToolbarView()
         cabecera = Adw.HeaderBar()
@@ -311,6 +382,224 @@ class VentanaNitro(Adw.ApplicationWindow):
             vista.set_content(pagina)
         return vista
 
+    # -- grupo 0: escenarios --------------------------------------------
+
+    def _grupo_escenarios(self) -> Adw.PreferencesGroup:
+        """Uso diario, Juego y Ocasion tranquila, como en NitroSense.
+
+        Cada escenario es una fila desplegable: el boton «Aplicar» lo pone de un
+        clic, y al desplegarla se edita (se guarda en ajustes.json en cuanto
+        se toca, como en NitroSense).  Aplicarlo son varias escrituras
+        privilegiadas seguidas; con auth_admin_keep solo la primera pide
+        contrasena.  Ver escenarios.py para lo que se copio y lo que no.
+        """
+        grupo = Adw.PreferencesGroup(
+            title="Escenarios",
+            description="Como en NitroSense: un clic pone el modo con cargador y "
+            "con bateria, los ventiladores y la iluminacion. Se aplican al "
+            "pulsar, no solos al abrir un juego.",
+        )
+        self._escenarios = (
+            escenarios.normalizar(self._ajustes.obtener("escenarios"))
+            or escenarios.por_defecto()
+        )
+        activo = self._ajustes.obtener("escenario_activo")
+        perfiles = self._control.perfiles()
+        # Los modos que se pueden elegir para cada fuente son los de NitroSense
+        # (onACMode / onBatteryPowerMode), leidos de 'choices'.
+        self._modos_escenario = {
+            "ac": [p for p in perfiles if p != sysfs.PERFIL_SOLO_BATERIA],
+            "bateria": [p for p in perfiles if p in sysfs.PERFILES_CON_BATERIA],
+        }
+        self._estilos_escenario = [""] + list(sysfs.PRESETS_RGB)
+        self._editores_escenario: list[dict] = []
+        self._botones_escenario: list[Gtk.Button] = []
+
+        for indice, esc in enumerate(self._escenarios):
+            fila = Adw.ExpanderRow(title=esc["nombre"])
+            fila.set_subtitle_lines(3)
+            marca = Gtk.Image.new_from_icon_name("object-select-symbolic")
+            marca.set_tooltip_text("Ultimo escenario aplicado")
+            marca.set_visible(indice == activo)
+            fila.add_prefix(marca)
+            boton = Gtk.Button(label="Aplicar", valign=Gtk.Align.CENTER)
+            boton.connect("clicked", self._al_aplicar_escenario, indice)
+            fila.add_suffix(boton)
+            self._botones_escenario.append(boton)
+
+            editor = {"fila": fila, "marca": marca}
+            for clave, titulo in (("perfil_ac", "Con cargador"),
+                                  ("perfil_bateria", "Con bateria")):
+                fuente = "ac" if clave == "perfil_ac" else "bateria"
+                modos = self._modos_escenario[fuente]
+                combo = Adw.ComboRow(
+                    title=titulo,
+                    model=Gtk.StringList.new(
+                        [sysfs.ETIQUETAS_PERFIL.get(p, p) for p in modos]
+                    ),
+                )
+                if esc[clave] in modos:
+                    combo.set_selected(modos.index(esc[clave]))
+                fila.add_row(combo)
+                editor[clave] = combo
+
+            modos_fan = Gtk.StringList()
+            for _, texto in MODOS_VENTILADOR:
+                modos_fan.append(texto)
+            combo_fan = Adw.ComboRow(title="Ventiladores", model=modos_fan)
+            ids = [m for m, _ in MODOS_VENTILADOR]
+            combo_fan.set_selected(ids.index(esc["ventiladores"]))
+            fila.add_row(combo_fan)
+            editor["ventiladores"] = combo_fan
+            for clave, titulo in (("fan_cpu", "Ventilador de CPU (%)"),
+                                  ("fan_gpu", "Ventilador de GPU (%)")):
+                spin = Adw.SpinRow.new_with_range(self._control.FAN_MIN_PCT, 100, 5)
+                spin.set_title(titulo)
+                spin.set_value(max(self._control.FAN_MIN_PCT, esc[clave]))
+                spin.set_visible(esc["ventiladores"] == "personalizado")
+                fila.add_row(spin)
+                editor[clave] = spin
+            if not self._hay_fan_manual:
+                combo_fan.set_sensitive(False)
+                combo_fan.set_subtitle("Sin control de ventiladores en este equipo.")
+
+            combo_luz = Adw.ComboRow(
+                title="Iluminacion",
+                model=Gtk.StringList.new(
+                    ["Sin cambios"] + [e for e in self._estilos_escenario if e]
+                ),
+            )
+            if esc["teclado"] in self._estilos_escenario:
+                combo_luz.set_selected(self._estilos_escenario.index(esc["teclado"]))
+            # Sin teclado RGB el escenario no toca la iluminacion (plan() ya lo
+            # salta), asi que tampoco se ofrece editarla.
+            combo_luz.set_visible(self._hay_teclado)
+            fila.add_row(combo_luz)
+            editor["teclado"] = combo_luz
+
+            for clave in ("perfil_ac", "perfil_bateria", "ventiladores", "teclado"):
+                editor[clave].connect("notify::selected", self._al_editar_escenario, indice)
+            for clave in ("fan_cpu", "fan_gpu"):
+                editor[clave].connect("notify::value", self._al_editar_escenario, indice)
+
+            self._editores_escenario.append(editor)
+            fila.set_subtitle(self._resumen_escenario(esc))
+            grupo.add(fila)
+        return grupo
+
+    def _resumen_escenario(self, esc: dict) -> str:
+        """Una linea con lo que pone el escenario, para el subtitulo."""
+        ac = sysfs.ETIQUETAS_PERFIL.get(esc["perfil_ac"], esc["perfil_ac"])
+        bat = sysfs.ETIQUETAS_PERFIL.get(esc["perfil_bateria"], esc["perfil_bateria"])
+        if esc["ventiladores"] == "personalizado":
+            fan = f"ventiladores {esc['fan_cpu']} / {esc['fan_gpu']} %"
+        else:
+            fan = "ventiladores " + dict(MODOS_VENTILADOR)[esc["ventiladores"]].lower()
+        partes = [f"{ac} con cargador", f"{bat} con bateria", fan]
+        if self._hay_teclado and esc["teclado"]:
+            partes.append(f"luz «{esc['teclado']}»")
+        return " · ".join(partes)
+
+    def _al_editar_escenario(self, _widget, _pspec, indice: int) -> None:
+        """Guarda en ajustes.json lo que se acaba de tocar en el editor."""
+        if self._cargando:
+            return
+        editor = self._editores_escenario[indice]
+        esc = dict(self._escenarios[indice])
+        for clave in ("perfil_ac", "perfil_bateria"):
+            modos = self._modos_escenario["ac" if clave == "perfil_ac" else "bateria"]
+            seleccion = editor[clave].get_selected()
+            if 0 <= seleccion < len(modos):
+                esc[clave] = modos[seleccion]
+        seleccion = editor["ventiladores"].get_selected()
+        if 0 <= seleccion < len(MODOS_VENTILADOR):
+            esc["ventiladores"] = MODOS_VENTILADOR[seleccion][0]
+        esc["fan_cpu"] = int(editor["fan_cpu"].get_value())
+        esc["fan_gpu"] = int(editor["fan_gpu"].get_value())
+        seleccion = editor["teclado"].get_selected()
+        if 0 <= seleccion < len(self._estilos_escenario):
+            esc["teclado"] = self._estilos_escenario[seleccion]
+        self._escenarios[indice] = esc
+        self._ajustes.fijar("escenarios", self._escenarios)
+        for clave in ("fan_cpu", "fan_gpu"):
+            editor[clave].set_visible(esc["ventiladores"] == "personalizado")
+        editor["fila"].set_subtitle(self._resumen_escenario(esc))
+
+    def _al_aplicar_escenario(self, _boton, indice: int) -> None:
+        """Aplica un escenario paso a paso, en un hilo (cada paso es un pkexec)."""
+        if self._aplicando_escenario:
+            return
+        esc = dict(self._escenarios[indice])
+        # El cargador se relee AHORA y no se toma el del tic de 10 s: el plan
+        # decide con el que modo se escribe y cual solo se anota.  Es una
+        # lectura ACPI por pulsacion, no por segundo.
+        self._corriente = sysfs.en_corriente()
+        pasos = escenarios.plan(
+            esc, self._corriente, self._control.perfiles(),
+            self._hay_fan_manual, self._hay_teclado,
+        )
+        if not pasos:
+            self._notificar("Ese escenario no tiene nada que aplicar en este equipo.")
+            return
+        self._aplicando_escenario = True
+        for boton in self._botones_escenario:
+            boton.set_sensitive(False)
+
+        def trabajo() -> None:
+            # Sin tocar un solo widget: solo sysfs, que es Python puro.  Se para
+            # en el primer fallo (una contrasena cancelada, un modo rechazado):
+            # seguir pondria unos ventiladores pensados para otro modo.
+            resultados = []
+            for tipo, valor in pasos:
+                resultado = self._ejecutar_paso_escenario(tipo, valor)
+                resultados.append((tipo, resultado))
+                if not resultado.ok:
+                    break
+            GLib.idle_add(self._fin_escenario, indice, resultados)
+
+        threading.Thread(target=trabajo, name="nitro-escenario", daemon=True).start()
+
+    def _ejecutar_paso_escenario(self, tipo: str, valor) -> sysfs.Resultado:
+        """Un paso de escenarios.plan(), de forma SINCRONA (va en un hilo)."""
+        if tipo in ("perfil", "perfil_otra"):
+            fuente, perfil = valor
+            return self._control.escribir_perfil_fuente(fuente, perfil)
+        if tipo == "perfil_directo":
+            return self._control.escribir_perfil(valor)
+        if tipo == "ventiladores":
+            cpu, gpu = valor
+            return self._control.escribir_ventiladores(cpu, gpu)
+        if tipo == "teclado":
+            return self._control.aplicar_preset(valor)
+        return sysfs.Resultado(False, f"Paso de escenario desconocido: {tipo!r}.")
+
+    def _fin_escenario(self, indice: int, resultados: list) -> bool:
+        """De vuelta en el hilo de la interfaz: avisa, marca y relee."""
+        self._aplicando_escenario = False
+        if self._cerrada or not self._interfaz_lista:
+            return GLib.SOURCE_REMOVE
+        for boton in self._botones_escenario:
+            boton.set_sensitive(True)
+        fallos = [r for _, r in resultados if not r.ok]
+        nombre = self._escenarios[indice]["nombre"]
+        if fallos:
+            self._notificar(fallos[0].mensaje)
+        else:
+            self._ajustes.fijar("escenario_activo", indice)
+            for i, editor in enumerate(self._editores_escenario):
+                editor["marca"].set_visible(i == indice)
+            self._notificar(f"Escenario «{nombre}» aplicado.")
+        hechos = {tipo for tipo, r in resultados if r.ok}
+        if "perfil" in hechos or "perfil_directo" in hechos:
+            # Se relee al momento en vez de esperar al tic de 10 s; y el
+            # firmware reescribe el PL1 por MMIO en cada cambio de modo.
+            self._tic_lento()
+            if self._ajustes.obtener("reaplicar_pl1"):
+                GLib.timeout_add(600, self._reaplicar_pl1)
+        if "teclado" in hechos and self._hay_teclado:
+            self._refrescar_teclado()
+        return GLib.SOURCE_REMOVE
+
     # -- grupo 1: perfil termico ---------------------------------------
 
     def _grupo_perfil(self) -> Adw.PreferencesGroup:
@@ -342,17 +631,21 @@ class VentanaNitro(Adw.ApplicationWindow):
         tope: mismos 23 caracteres, 425 px asignados, is_ellipsized()=False.
         """
         grupo = Adw.PreferencesGroup(
-            title="Perfil termico",
-            description="Controla la curva de ventilacion y el limite de potencia "
-            "del firmware.",
+            title="Modo del sistema",
+            description="Los modos de NitroSense. Con cargador: Silencioso, "
+            "Equilibrado, Rendimiento y Turbo. Con bateria: Equilibrado y Eco.",
         )
 
         perfiles = self._control.perfiles()
         self._perfiles = perfiles
-        etiquetas = [sysfs.ETIQUETAS_PERFIL.get(p, p) for p in perfiles]
+        # El desplegable ensena solo lo que NitroSense ofreceria ahora; la lista
+        # se rehace en cuanto cambia el cargador o la bateria cruza el 40 %.
+        # Ver _reconstruir_modos().
+        self._perfiles_visibles = self._modos_a_mostrar()
+        etiquetas = [sysfs.ETIQUETAS_PERFIL.get(p, p) for p in self._perfiles_visibles]
 
         self._combo_perfil = Adw.ComboRow(
-            title="Perfil activo",
+            title="Modo activo",
             model=Gtk.StringList.new(etiquetas),
         )
         self._combo_perfil.set_use_subtitle(True)
@@ -368,6 +661,41 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._combo_perfil.connect("notify::selected", self._al_elegir_perfil)
         grupo.add(self._combo_perfil)
 
+        # Por que faltan modos ahora mismo (con bateria, o por debajo del 40 %).
+        # Nace oculta: sin cargador conocido no se filtra nada.
+        self._fila_aviso_modos = Adw.ActionRow(title="Modos limitados")
+        self._fila_aviso_modos.set_subtitle_lines(0)
+        self._fila_aviso_modos.add_prefix(
+            Gtk.Image.new_from_icon_name("dialog-information-symbolic")
+        )
+        self._fila_aviso_modos.set_visible(False)
+        grupo.add(self._fila_aviso_modos)
+        self._actualizar_aviso_modos()
+
+        # La tecla de modo: recorrer los modos o Turbo si/no, como NitroSense.
+        # Solo con linuwu_sense, que es quien la atiende (ver TECLA_MODO).
+        self._combo_tecla = None
+        if self._control.hay_tecla_modo():
+            self._hw_tecla_modo = self._control.leer_tecla_modo()
+            opciones = Gtk.StringList()
+            for _, texto in OPCIONES_TECLA_MODO:
+                opciones.append(texto)
+            self._combo_tecla = Adw.ComboRow(
+                title="Tecla de modo",
+                subtitle="Que hace la tecla de modo del teclado",
+                model=opciones,
+            )
+            if self._hw_tecla_modo is not None:
+                self._combo_tecla.set_selected(0 if self._hw_tecla_modo else 1)
+            else:
+                # Un valor que no es ni Y ni N: no se sabe, no se toca.
+                self._combo_tecla.set_sensitive(False)
+                self._combo_tecla.set_subtitle(
+                    "El modulo devuelve un valor que no se puede interpretar."
+                )
+            self._combo_tecla.connect("notify::selected", self._al_cambiar_tecla)
+            grupo.add(self._combo_tecla)
+
         # Fila con las RPM tipicas medidas de cada perfil.
         fila_rpm = Adw.ActionRow(
             title="RPM tipicas por perfil",
@@ -376,7 +704,7 @@ class VentanaNitro(Adw.ApplicationWindow):
             # otro modelo son solo una referencia, y llamarlas «de este equipo»
             # es mentirle a quien mire el numero.  Las RPM de verdad son las
             # dos filas de abajo, que si vienen del hwmon.
-            subtitle="Referencia medida en un Acer Nitro AN17-51: «Rendimiento» "
+            subtitle="Referencia medida en un Acer Nitro AN17-51: «Turbo» "
             "sopla al doble para ganar apenas 1 °C. Tu equipo puede dar otras.",
         )
         # Sin limite de lineas: con las cinco columnas de iconos ocupando el
@@ -413,6 +741,51 @@ class VentanaNitro(Adw.ApplicationWindow):
             grupo.add(fila_rpm)
         return grupo
 
+    def _modos_a_mostrar(self) -> list[str]:
+        """Los modos que ensena el desplegable ahora, como NitroSense.
+
+        Son los de perfiles_permitidos() y, ademas, el modo REAL si no esta
+        entre ellos: por ejemplo Eco los segundos que tarda el driver en
+        reponer el modo de cargador tras enchufarlo.  Un desplegable que no
+        puede marcar el modo que hay le mentiria al usuario.
+        """
+        visibles = self._control.perfiles_permitidos(self._corriente, self._bat_capacidad)
+        actual = self._perfil_actual
+        if actual in self._perfiles and actual not in visibles:
+            visibles = [p for p in self._perfiles if p in visibles or p == actual]
+        return visibles
+
+    def _reconstruir_modos(self, forzar_seleccion: bool = False) -> None:
+        """Rehace el desplegable si cambian los modos permitidos.
+
+        Guarda y repone ``self._cargando`` en vez de ponerlo a False al
+        terminar: se llama tambien desde dentro de los tics, que ya lo tienen
+        puesto, y soltarlo aqui dejaria el resto del tic escribiendo en el
+        hardware al mover los widgets.
+        """
+        nuevos = self._modos_a_mostrar()
+        previo = self._cargando
+        self._cargando = True
+        try:
+            if nuevos != self._perfiles_visibles:
+                self._perfiles_visibles = nuevos
+                self._combo_perfil.set_model(Gtk.StringList.new(
+                    [sysfs.ETIQUETAS_PERFIL.get(p, p) for p in nuevos]
+                ))
+                forzar_seleccion = True
+            if forzar_seleccion and self._perfil_actual in nuevos:
+                self._combo_perfil.set_selected(nuevos.index(self._perfil_actual))
+        finally:
+            self._cargando = previo
+        self._actualizar_aviso_modos()
+
+    def _actualizar_aviso_modos(self) -> None:
+        """Ensena por que faltan modos (bateria, o menos del 40 %), o nada."""
+        motivo = self._control.motivo_limite_modos(self._corriente, self._bat_capacidad)
+        self._fila_aviso_modos.set_visible(motivo is not None)
+        if motivo is not None:
+            self._fila_aviso_modos.set_subtitle(motivo)
+
     # -- grupo 2: ventiladores -----------------------------------------
 
     def _grupo_ventiladores(self) -> Adw.PreferencesGroup:
@@ -446,51 +819,70 @@ class VentanaNitro(Adw.ApplicationWindow):
         grupo.add(self._fila_fan1)
         grupo.add(self._fila_fan2)
 
-        # -- control manual ------------------------------------------------
+        # -- control: Automatico / Maximo / Personalizado ---------------------
         # Es la funcion que en Windows trae NitroSense y la unica de la
         # aplicacion que puede EMPEORAR el equipo si se usa mal, asi que se
         # ensena con su aviso y con el automatico como estado de partida.
-        self._hay_fan_manual = self._control.hay_ventiladores_manuales()
-
-        self._sw_fan_manual = Adw.SwitchRow(
-            title="Control manual",
-            subtitle=FAN_MANUAL_APAGADO,
+        #
+        # Antes era un interruptor «Control manual» con los dos ventiladores a
+        # la vez.  Desde el 2026-09-23 son los tres modos de NitroSense, y en
+        # Personalizado cada ventilador tiene su casilla «Auto», como alli.
+        modos = Gtk.StringList()
+        for _, texto in MODOS_VENTILADOR:
+            modos.append(texto)
+        self._combo_fan = Adw.ComboRow(
+            title="Control de ventiladores",
+            subtitle=SUBTITULO_FAN["auto"],
+            model=modos,
         )
-        self._sw_fan_manual.set_subtitle_lines(3)
+        self._combo_fan.set_subtitle_lines(3)
         icono_aviso = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
         icono_aviso.set_tooltip_text(AVISO_VENTILADORES)
         icono_aviso.add_css_class("warning")
-        self._sw_fan_manual.add_suffix(icono_aviso)
-        self._sw_fan_manual.set_tooltip_text(AVISO_VENTILADORES)
+        self._combo_fan.add_suffix(icono_aviso)
+        self._combo_fan.set_tooltip_text(AVISO_VENTILADORES)
 
-        self._spin_fan_cpu = Adw.SpinRow.new_with_range(
-            self._control.FAN_MIN_PCT, 100, 5
-        )
-        self._spin_fan_cpu.set_title("Ventilador de CPU")
-        self._spin_fan_cpu.set_subtitle("Por ciento")
-        self._spin_fan_gpu = Adw.SpinRow.new_with_range(
-            self._control.FAN_MIN_PCT, 100, 5
-        )
-        self._spin_fan_gpu.set_title("Ventilador de GPU")
-        self._spin_fan_gpu.set_subtitle("Por ciento")
-        for spin in (self._spin_fan_cpu, self._spin_fan_gpu):
-            spin.set_value(100)
-            spin.set_sensitive(False)
+        # Un GtkSpinButton suelto dentro de una ActionRow, y no una AdwSpinRow:
+        # la casilla «Auto» va en la misma fila, y desactivar una AdwSpinRow
+        # desactiva tambien todo lo que lleve dentro, incluida la casilla que
+        # habria que pulsar para volver a activarla.
+        (self._fila_fan_cpu, self._spin_fan_cpu,
+         self._auto_fan_cpu) = self._fila_ventilador_manual("Ventilador de CPU")
+        (self._fila_fan_gpu, self._spin_fan_gpu,
+         self._auto_fan_gpu) = self._fila_ventilador_manual("Ventilador de GPU")
+        for fila in (self._fila_fan_cpu, self._fila_fan_gpu):
+            fila.set_visible(False)
 
         if not self._hay_fan_manual:
-            # Igual que el resto: DESACTIVADO y diciendo que falta, nunca
-            # apagado, que afirmaria que la funcion existe y esta en reposo.
-            self._sw_fan_manual.set_sensitive(False)
-            self._sw_fan_manual.set_subtitle(AYUDA_SIN_VENTILADORES)
+            # Igual que el resto: DESACTIVADO y diciendo que falta, nunca en
+            # automatico, que afirmaria que la funcion existe y esta en reposo.
+            self._combo_fan.set_sensitive(False)
+            self._combo_fan.set_subtitle(AYUDA_SIN_VENTILADORES)
         else:
-            self._sw_fan_manual.connect("notify::active", self._al_cambiar_fan_manual)
-            self._spin_fan_cpu.connect("notify::value", self._al_cambiar_fan_pct)
-            self._spin_fan_gpu.connect("notify::value", self._al_cambiar_fan_pct)
+            self._combo_fan.connect("notify::selected", self._al_cambiar_fan_modo)
+            for spin in (self._spin_fan_cpu, self._spin_fan_gpu):
+                spin.connect("notify::value", self._al_cambiar_fan_pct)
+            for casilla in (self._auto_fan_cpu, self._auto_fan_gpu):
+                casilla.connect("toggled", self._al_cambiar_fan_pct)
 
-        grupo.add(self._sw_fan_manual)
-        grupo.add(self._spin_fan_cpu)
-        grupo.add(self._spin_fan_gpu)
+        grupo.add(self._combo_fan)
+        grupo.add(self._fila_fan_cpu)
+        grupo.add(self._fila_fan_gpu)
         return grupo
+
+    def _fila_ventilador_manual(self, titulo: str):
+        """Fila de Personalizado: porcentaje y casilla «Auto» de un ventilador."""
+        fila = Adw.ActionRow(title=titulo, subtitle="Por ciento")
+        spin = Gtk.SpinButton.new_with_range(self._control.FAN_MIN_PCT, 100, 5)
+        spin.set_value(50)
+        spin.set_valign(Gtk.Align.CENTER)
+        spin.set_numeric(True)
+        casilla = Gtk.CheckButton(label="Auto")
+        casilla.set_valign(Gtk.Align.CENTER)
+        casilla.set_tooltip_text("Deja este ventilador en manos del EC")
+        fila.add_suffix(spin)
+        fila.add_suffix(casilla)
+        return fila, spin, casilla
 
     def _grupo_pantalla(self) -> Adw.PreferencesGroup:
         """Overdrive del panel.
@@ -665,8 +1057,11 @@ class VentanaNitro(Adw.ApplicationWindow):
     def _grupo_bateria(self) -> Adw.PreferencesGroup:
         grupo = Adw.PreferencesGroup(title="Bateria")
 
+        # El nombre es el de NitroSense («Carga de bateria optimizada: para
+        # reducir el envejecimiento de la bateria, la capacidad de carga estara
+        # limitada al 80 %»); apagado equivale a su «Carga de bateria completa».
         self._sw_salud = Adw.SwitchRow(
-            title="Limitar carga al 80 %",
+            title="Carga optimizada (limite al 80 %)",
             subtitle="Alarga la vida de la bateria si usas el portatil enchufado.",
         )
         self._sw_salud.set_subtitle_lines(3)
@@ -692,12 +1087,69 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._lbl_temp_bat.add_css_class("dim-label")
         self._fila_temp_bat.add_suffix(self._lbl_temp_bat)
         grupo.add(self._fila_temp_bat)
+
+        # Salud de la bateria: lo que NitroSense ensena en su «Informacion de
+        # salud de la bateria».  Aqui es la cuenta que se puede hacer sin su
+        # servicio: capacidad de ahora frente a la de fabrica, y los ciclos si
+        # el firmware los cuenta.  Nace oculta hasta la primera lectura.
+        self._fila_salud_bat = Adw.ActionRow(
+            title="Salud de la bateria",
+            subtitle="Capacidad actual frente a la de fabrica.",
+        )
+        self._lbl_salud_bat = Gtk.Label(label="—")
+        self._lbl_salud_bat.add_css_class("numeric")
+        self._lbl_salud_bat.add_css_class("dim-label")
+        self._fila_salud_bat.add_suffix(self._lbl_salud_bat)
+        self._fila_salud_bat.set_visible(False)
+        grupo.add(self._fila_salud_bat)
+
+        # Calibracion.  Era la regla 15 del README: NO se exponia, porque un
+        # ciclo descarga y recarga la bateria entera durante horas.  El
+        # 2026-09-23 el usuario pidio tenerla como en NitroSense, y se pone
+        # COMO ALLI: detras de un dialogo con sus mismos avisos, y solo con el
+        # cargador enchufado.  Nunca se repone al arrancar (el helper no la
+        # anota).  Sin la ruta en el driver, la fila no se ensena.
+        self._fila_calibracion = None
+        if self._control.hay_calibracion():
+            self._hw_calibracion = self._control.leer_calibracion()
+            self._fila_calibracion = Adw.ActionRow(
+                title="Calibracion de la bateria",
+                subtitle="Se recomienda cada 3 meses. Tarda varias horas.",
+            )
+            self._fila_calibracion.set_subtitle_lines(0)
+            self._btn_calibracion = Gtk.Button(valign=Gtk.Align.CENTER)
+            self._btn_calibracion.connect("clicked", self._al_pulsar_calibracion)
+            self._fila_calibracion.add_suffix(self._btn_calibracion)
+            self._pintar_calibracion()
+            grupo.add(self._fila_calibracion)
         return grupo
+
+    def _pintar_calibracion(self) -> None:
+        """Pone el boton y el subtitulo de la calibracion segun su estado real."""
+        if self._fila_calibracion is None:
+            return
+        if self._hw_calibracion:
+            self._btn_calibracion.set_label("Detener")
+            self._btn_calibracion.remove_css_class("suggested-action")
+            self._fila_calibracion.set_subtitle(
+                "En marcha. No desconectes el cargador hasta que termine."
+            )
+        else:
+            self._btn_calibracion.set_label("Calibrar…")
+            self._fila_calibracion.set_subtitle(
+                "Se recomienda cada 3 meses. Tarda varias horas."
+                if self._hw_calibracion is not None else
+                "No se ha podido leer si hay una calibracion en marcha."
+            )
 
     # -- grupo 5: temperaturas -----------------------------------------
 
     def _grupo_temperaturas(self) -> Adw.PreferencesGroup:
-        grupo = Adw.PreferencesGroup(title="Temperaturas")
+        # «Supervision» es el nombre de la pagina de NitroSense, que ensena lo
+        # mismo que aqui (GET_MONITOR_DATA): temperatura, uso y frecuencia de
+        # CPU y GPU, y memoria.  Lo que NO se copia es la red: no es hardware
+        # de este portatil y GNOME ya la ensena.
+        grupo = Adw.PreferencesGroup(title="Supervision")
 
         self._fila_cpu = Adw.ActionRow(
             title="Paquete de CPU", subtitle="coretemp · Package id 0"
@@ -707,6 +1159,24 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._lbl_cpu.add_css_class("dim-label")
         self._fila_cpu.add_suffix(self._lbl_cpu)
         grupo.add(self._fila_cpu)
+
+        self._fila_uso_cpu = Adw.ActionRow(
+            title="Uso de CPU", subtitle="Media de todos los hilos, /proc/stat"
+        )
+        self._lbl_uso_cpu = Gtk.Label(label="—")
+        self._lbl_uso_cpu.add_css_class("numeric")
+        self._lbl_uso_cpu.add_css_class("dim-label")
+        self._fila_uso_cpu.add_suffix(self._lbl_uso_cpu)
+        grupo.add(self._fila_uso_cpu)
+
+        self._fila_memoria = Adw.ActionRow(
+            title="Memoria", subtitle="En uso (sin contar la cache) y total"
+        )
+        self._lbl_memoria = Gtk.Label(label="—")
+        self._lbl_memoria.add_css_class("numeric")
+        self._lbl_memoria.add_css_class("dim-label")
+        self._fila_memoria.add_suffix(self._lbl_memoria)
+        grupo.add(self._fila_memoria)
 
         # El «16» estaba cableado: son los hilos del i7-13620H de esta maquina.
         # En otra CPU el subtitulo mentia.  Se cuenta lo que de verdad se
@@ -808,9 +1278,16 @@ class VentanaNitro(Adw.ApplicationWindow):
             self._arrancar_bucles()
 
     def _al_cambiar_actividad(self, *_args) -> None:
-        """Respaldo: al recuperar el foco nos aseguramos de estar leyendo."""
+        """Respaldo: al recuperar el foco nos aseguramos de estar leyendo.
+
+        Y de paso se relee la calibracion: un ciclo termina solo al cabo de
+        horas, y su lectura (4,9 ms de WMI) no cabe en ningun temporizador.
+        Volver a la ventana es el momento en que alguien va a mirarla.
+        """
         if self.get_property("is-active"):
             self._arrancar_bucles()
+            if self._interfaz_lista and getattr(self, "_fila_calibracion", None) is not None:
+                self._refrescar_calibracion()
 
     def _al_cerrar(self, *_args) -> bool:
         """La ventana se cierra: se para todo y no se vuelve a arrancar."""
@@ -852,6 +1329,29 @@ class VentanaNitro(Adw.ApplicationWindow):
                 if estado.freq_media_mhz is None
                 else f"{estado.freq_media_mhz / 1000:.2f} GHz"
             )
+            self._lbl_uso_cpu.set_label(
+                "—" if estado.uso_cpu is None else f"{estado.uso_cpu:.0f} %"
+            )
+            if estado.memoria_usada_mib is None or not estado.memoria_total_mib:
+                self._lbl_memoria.set_label("—")
+            else:
+                usada, total = estado.memoria_usada_mib, estado.memoria_total_mib
+                self._lbl_memoria.set_label(
+                    f"{usada / 1024:.1f} / {total / 1024:.1f} GiB · "
+                    f"{100 * usada / total:.0f} %"
+                )
+
+            # La bateria cruzando el 40 % cambia los modos que se ofrecen, como
+            # en NitroSense.  Solo se rehace el desplegable al CRUZAR el umbral,
+            # no en cada tic.
+            antes = self._bat_capacidad
+            self._bat_capacidad = estado.bat_capacidad
+            umbral = sysfs.BATERIA_MINIMA_MODOS
+            if (antes is None) != (estado.bat_capacidad is None) or (
+                antes is not None and estado.bat_capacidad is not None
+                and (antes < umbral) != (estado.bat_capacidad < umbral)
+            ):
+                self._reconstruir_modos()
 
             # PL1 efectivo: MSR y MMIO, con el MMIO en ambar si difieren.
             self._actualizar_pl1(estado)
@@ -872,43 +1372,67 @@ class VentanaNitro(Adw.ApplicationWindow):
 
             # Ventiladores manuales.  Se siguen a 1 Hz porque el estado puede
             # cambiar SIN que lo haya hecho la aplicacion: el propio driver los
-            # devuelve al automatico al pasar a Silencioso o Bajo consumo.
+            # devuelve al automatico al pasar a Silencioso o Eco, y al
+            # enchufar o desenchufar repone los de la otra fuente.
             self._actualizar_ventiladores_manuales(estado)
         finally:
             self._cargando = False
         return GLib.SOURCE_CONTINUE
 
-    def _actualizar_ventiladores_manuales(self, estado: sysfs.EstadoRapido) -> None:
+    def _actualizar_ventiladores_manuales(
+        self, estado: sysfs.EstadoRapido | None = None
+    ) -> None:
         """Refleja en la interfaz lo que dice el hardware.
 
         Se llama desde dentro del bloque con ``self._cargando`` puesto, asi que
-        mover los widgets aqui no dispara ninguna escritura.
+        mover los widgets aqui no dispara ninguna escritura.  Sin *estado*
+        (desde un cambio de modo) se repinta con el ultimo leido.
         """
         if not self._hay_fan_manual:
             return
-        cpu, gpu = estado.fan_cpu_pct, estado.fan_gpu_pct
-        if cpu is None or gpu is None:
+        if estado is not None:
+            cpu, gpu = estado.fan_cpu_pct, estado.fan_gpu_pct
+            if cpu is None or gpu is None:
+                return
+            self._hw_fan = (cpu, gpu)
+        if self._hw_fan is None:
             return
-        manual = not (cpu == 0 and gpu == 0)
-        self._hw_fan_manual = manual
-        self._hw_fan_cpu, self._hw_fan_gpu = (cpu, gpu) if manual else (None, None)
-        self._sw_fan_manual.set_active(manual)
-        if self._hay_fan_manual:
-            self._sw_fan_manual.set_subtitle(
-                FAN_MANUAL_ENCENDIDO if manual else FAN_MANUAL_APAGADO
-            )
-        for spin in (self._spin_fan_cpu, self._spin_fan_gpu):
-            spin.set_sensitive(manual)
+        cpu, gpu = self._hw_fan
+        modo = sysfs.modo_ventiladores(cpu, gpu)
+        ids = [m for m, _ in MODOS_VENTILADOR]
+        # Con una escritura pendiente (el retardo antirrafaga, o el dialogo de
+        # contrasena abierto) manda lo que ha elegido el usuario, no lo que
+        # dice todavia el hardware.
+        pendiente = self._id_fan is not None or self._fan_en_vuelo
+        if not pendiente and modo in ids:
+            self._combo_fan.set_selected(ids.index(modo))
+        personalizado = ids[self._combo_fan.get_selected()] == "personalizado"
+
+        # Silencioso y Eco bloquean el control, como en NitroSense.
+        bloqueado = self._control.ventiladores_bloqueados(self._perfil_actual)
+        self._combo_fan.set_sensitive(not bloqueado)
+        self._combo_fan.set_subtitle(
+            FAN_BLOQUEADO if bloqueado else SUBTITULO_FAN.get(modo, SUBTITULO_FAN["auto"])
+        )
+        for fila in (self._fila_fan_cpu, self._fila_fan_gpu):
+            fila.set_visible(personalizado)
+            fila.set_sensitive(not bloqueado)
+
         # Solo se pisa el valor del usuario si NO lo esta tocando.  Con
         # has_focus() sobre la fila esto no funcionaba (devuelve False siempre,
         # el foco lo tiene el GtkText de dentro) y el tic pisaba el valor a
         # medio bajar; ver _en_edicion().
-        pendiente = self._id_fan is not None
-        if manual and not (self._en_edicion(self._spin_fan_cpu, pendiente)
-                           or self._en_edicion(self._spin_fan_gpu, pendiente)):
-            minimo = self._control.FAN_MIN_PCT
-            self._spin_fan_cpu.set_value(max(minimo, min(100, cpu)))
-            self._spin_fan_gpu.set_value(max(minimo, min(100, gpu)))
+        if modo == "personalizado" and not pendiente:
+            for valor, spin, casilla in (
+                (cpu, self._spin_fan_cpu, self._auto_fan_cpu),
+                (gpu, self._spin_fan_gpu, self._auto_fan_gpu),
+            ):
+                casilla.set_active(valor == 0)
+                if valor != 0 and not self._en_edicion(spin, False):
+                    spin.set_value(max(self._control.FAN_MIN_PCT, min(100, valor)))
+        for spin, casilla in ((self._spin_fan_cpu, self._auto_fan_cpu),
+                              (self._spin_fan_gpu, self._auto_fan_gpu)):
+            spin.set_sensitive(not casilla.get_active())
 
     def _actualizar_pl1(self, estado: sysfs.EstadoRapido) -> None:
         msr, mmio = estado.pl1_msr_w, estado.pl1_mmio_w
@@ -1007,12 +1531,28 @@ class VentanaNitro(Adw.ApplicationWindow):
         estado = self._control.leer_lento()
         self._cargando = True
         try:
+            cambio_fuente = estado.corriente != self._corriente
+            self._corriente = estado.corriente
             if estado.perfil is not None and estado.perfil != self._perfil_actual:
                 self._perfil_actual = estado.perfil
-                if estado.perfil in self._perfiles:
-                    self._combo_perfil.set_selected(self._perfiles.index(estado.perfil))
                 self._aviso_perfil.set_visible(
                     estado.perfil == sysfs.PERFIL_PROBLEMATICO
+                )
+                # El modo manda sobre los ventiladores: Silencioso y Eco los
+                # bloquean.  Se repinta con el ultimo fan_speed leido.
+                self._actualizar_ventiladores_manuales()
+                cambio_fuente = True  # para reseleccionar abajo
+            if cambio_fuente:
+                # Rehace la lista si hace falta Y deja marcado el modo real.
+                self._reconstruir_modos(forzar_seleccion=True)
+            # Salud de la bateria: barata (la misma cache que capacity).
+            if estado.salud_bateria_pct is not None:
+                self._fila_salud_bat.set_visible(True)
+                self._lbl_salud_bat.set_label(f"{estado.salud_bateria_pct:.0f} %")
+                self._fila_salud_bat.set_subtitle(
+                    "Capacidad actual frente a la de fabrica"
+                    + (f" · {estado.ciclos_bateria} ciclos."
+                       if estado.ciclos_bateria else ".")
                 )
             self._lbl_temp_bat.set_label(
                 "—" if estado.temp_bateria is None else f"{estado.temp_bateria:.1f} °C"
@@ -1052,6 +1592,10 @@ class VentanaNitro(Adw.ApplicationWindow):
             return GLib.SOURCE_REMOVE
         self._fila_gpu.set_visible(True)
         partes = [f"{estado.temperatura:.0f} °C"]
+        if estado.uso is not None:
+            partes.append(f"{estado.uso} %")
+        if estado.reloj_mhz is not None:
+            partes.append(f"{estado.reloj_mhz} MHz")
         if estado.vatios is not None:
             partes.append(f"{estado.vatios:.1f} W")
         self._lbl_gpu.set_label(" · ".join(partes))
@@ -1408,7 +1952,47 @@ class VentanaNitro(Adw.ApplicationWindow):
             self._sw_sonido.set_active(self._tec.sonido_arranque)
         self._sw_sonido.connect("notify::active", self._al_cambiar_sonido)
         grupo.add(self._sw_sonido)
+
+        fila = self._fila_teclas_especiales()
+        if fila is not None:
+            grupo.add(fila)
         return grupo
+
+    #: Esquema de GSettings de las teclas especiales de GNOME.
+    ESQUEMA_A11Y = "org.gnome.desktop.a11y.keyboard"
+
+    def _fila_teclas_especiales(self) -> Adw.SwitchRow | None:
+        """«Teclas especiales» de NitroSense, que es el Sticky Keys de Windows.
+
+        Mirado en Windows el 2026-09-23, con un solo dato: el STICKY_KEY que
+        lee NitroSense (0) cuadra con el bit SKF_STICKYKEYSON de HKCU\\Control
+        Panel\\Accessibility\\StickyKeys (apagado, Flags=510), y su texto es
+        el de accesibilidad («Pulse las teclas de una en una para accesos
+        directos del teclado»).  No se probo a cambiarlo desde NitroSense.
+        No es nada del EC, asi que aqui es el mismo ajuste de GNOME: sin
+        helper, sin contrasena, y ligado en los dos sentidos con GSettings (si
+        se cambia desde Configuracion, la fila se entera sola).
+
+        Devuelve None si el esquema no esta (un escritorio que no es GNOME):
+        mejor no ensenar la fila que ensenar una que no hace nada.
+        """
+        fuente = Gio.SettingsSchemaSource.get_default()
+        esquema = fuente.lookup(self.ESQUEMA_A11Y, True) if fuente is not None else None
+        if esquema is None or not esquema.has_key("stickykeys-enable"):
+            return None
+        # Se guarda en la ventana: si el GSettings se destruyera, el enlace
+        # con la fila se romperia sin avisar.
+        self._ajustes_a11y = Gio.Settings.new(self.ESQUEMA_A11Y)
+        fila = Adw.SwitchRow(
+            title="Teclas especiales",
+            subtitle="Pulsa las teclas de un atajo de una en una. Es el ajuste "
+                     "de accesibilidad de GNOME.",
+        )
+        fila.set_subtitle_lines(3)
+        self._ajustes_a11y.bind(
+            "stickykeys-enable", fila, "active", Gio.SettingsBindFlags.DEFAULT
+        )
+        return fila
 
     # -- acciones de la pagina de teclado --------------------------------
 
@@ -1593,9 +2177,11 @@ class VentanaNitro(Adw.ApplicationWindow):
         if self._cargando:
             return
         indice = self._combo_perfil.get_selected()
-        if indice < 0 or indice >= len(self._perfiles):
+        # El indice es del desplegable, que ensena solo los modos permitidos:
+        # se traduce con _perfiles_visibles, no con la lista de 'choices'.
+        if indice < 0 or indice >= len(self._perfiles_visibles):
             return
-        perfil = self._perfiles[indice]
+        perfil = self._perfiles_visibles[indice]
         if perfil == self._perfil_actual:
             return
 
@@ -1603,13 +2189,22 @@ class VentanaNitro(Adw.ApplicationWindow):
 
         def al_fallo() -> None:
             # Deshacemos la seleccion visual: la UI no debe mentir.
-            if anterior in self._perfiles:
+            if anterior in self._perfiles_visibles:
                 self._cargando = True
-                self._combo_perfil.set_selected(self._perfiles.index(anterior))
+                self._combo_perfil.set_selected(self._perfiles_visibles.index(anterior))
                 self._cargando = False
 
         def al_exito() -> None:
             self._perfil_actual = perfil
+            self._aviso_perfil.set_visible(perfil == sysfs.PERFIL_PROBLEMATICO)
+            # Silencioso y Eco bloquean los ventiladores (y el driver los pone
+            # en automatico): se repinta sin esperar al tic.
+            self._cargando = True
+            try:
+                self._actualizar_ventiladores_manuales()
+                self._reconstruir_modos()
+            finally:
+                self._cargando = False
             # El firmware reescribe el PL1 por MMIO en cada cambio de perfil.
             #
             # OJO: aqui habia `self._ajustes.reaplicar_pl1`, y Ajustes no tiene
@@ -1754,58 +2349,109 @@ class VentanaNitro(Adw.ApplicationWindow):
             al_fallo,
         )
 
-    def _al_cambiar_fan_manual(self, *_args) -> None:
-        """Interruptor de control manual de ventiladores."""
-        deseado = self._sw_fan_manual.get_active()
-        if self._cargando or self._hw_fan_manual is None or deseado == self._hw_fan_manual:
+    def _modo_fan_elegido(self) -> str:
+        """El modo que marca el desplegable de ventiladores ahora mismo."""
+        indice = self._combo_fan.get_selected()
+        if 0 <= indice < len(MODOS_VENTILADOR):
+            return MODOS_VENTILADOR[indice][0]
+        return "auto"
+
+    def _valores_fan_personalizado(self) -> tuple[int | None, int | None]:
+        """(cpu, gpu) de las filas de Personalizado: None si su «Auto» esta marcado."""
+        cpu = None if self._auto_fan_cpu.get_active() else int(self._spin_fan_cpu.get_value())
+        gpu = None if self._auto_fan_gpu.get_active() else int(self._spin_fan_gpu.get_value())
+        return cpu, gpu
+
+    def _al_cambiar_fan_modo(self, *_args) -> None:
+        """Automatico / Maximo / Personalizado: se escribe al elegir."""
+        if self._cargando or self._hw_fan is None:
             return
-        previo = self._hw_fan_manual
+        modo = self._modo_fan_elegido()
+        if modo == sysfs.modo_ventiladores(*self._hw_fan):
+            return
+        # Una escritura de porcentajes pendiente queda anulada: manda el modo.
+        if self._id_fan is not None:
+            GLib.source_remove(self._id_fan)
+            self._id_fan = None
+        if modo == "auto":
+            cpu, gpu = None, None
+        elif modo == "max":
+            cpu, gpu = 100, 100
+        else:
+            cpu, gpu = self._valores_fan_personalizado()
+        previo = self._hw_fan
+        # Las filas de Personalizado se ensenan en cuanto se elige, sin
+        # esperar a que el hardware conteste.
+        for fila in (self._fila_fan_cpu, self._fila_fan_gpu):
+            fila.set_visible(modo == "personalizado")
+
+        def repintar() -> None:
+            self._cargando = True
+            try:
+                self._actualizar_ventiladores_manuales()
+            finally:
+                self._cargando = False
 
         def al_fallo() -> None:
-            self._cargando = True
-            self._sw_fan_manual.set_active(previo)
-            self._cargando = False
+            self._fan_en_vuelo = False
+            ids = [m for m, _ in MODOS_VENTILADOR]
+            anterior = sysfs.modo_ventiladores(*previo)
+            if anterior in ids:
+                self._cargando = True
+                self._combo_fan.set_selected(ids.index(anterior))
+                self._cargando = False
+            repintar()
 
         def al_exito() -> None:
-            self._hw_fan_manual = deseado
+            self._fan_en_vuelo = False
+            self._hw_fan = (cpu or 0, gpu or 0)
+            repintar()
 
-        if deseado:
-            cpu = int(self._spin_fan_cpu.get_value())
-            gpu = int(self._spin_fan_gpu.get_value())
-            lanzar = lambda cb: self._control.escribir_ventiladores(cpu, gpu, al_terminar=cb)
-        else:
-            lanzar = lambda cb: self._control.escribir_ventiladores(None, None, al_terminar=cb)
-        self._lanzar_escritura(lanzar, al_exito, al_fallo)
+        self._fan_en_vuelo = True
+        self._lanzar_escritura(
+            lambda cb: self._control.escribir_ventiladores(cpu, gpu, al_terminar=cb),
+            al_exito, al_fallo,
+        )
 
     def _al_cambiar_fan_pct(self, *_args) -> None:
-        """Programa la escritura de los dos porcentajes, con retardo.
+        """Programa la escritura de Personalizado, con retardo.
 
         Mismo motivo que el PL1: cada clic en «+» emite su notify, y sin
-        retardo cada uno seria una invocacion del helper como root.
+        retardo cada uno seria una invocacion del helper como root.  Lo
+        disparan tambien las casillas «Auto».
         """
         if self._id_fan is not None:
             GLib.source_remove(self._id_fan)
             self._id_fan = None
-        if self._cargando or not self._sw_fan_manual.get_active():
+        # La casilla desactiva su selector al momento, sin esperar al tic.
+        for spin, casilla in ((self._spin_fan_cpu, self._auto_fan_cpu),
+                              (self._spin_fan_gpu, self._auto_fan_gpu)):
+            spin.set_sensitive(not casilla.get_active())
+        if self._cargando or self._modo_fan_elegido() != "personalizado":
             return
         self._id_fan = GLib.timeout_add(RETARDO_FAN_MS, self._escribir_fan_ahora)
 
     def _escribir_fan_ahora(self) -> bool:
         self._id_fan = None
-        if self._cargando or not self._sw_fan_manual.get_active():
+        if self._cargando or self._modo_fan_elegido() != "personalizado":
             return GLib.SOURCE_REMOVE
-        cpu = int(self._spin_fan_cpu.get_value())
-        gpu = int(self._spin_fan_gpu.get_value())
-        if (cpu, gpu) == (self._hw_fan_cpu, self._hw_fan_gpu):
+        cpu, gpu = self._valores_fan_personalizado()
+        if self._hw_fan is not None and (cpu or 0, gpu or 0) == self._hw_fan:
             return GLib.SOURCE_REMOVE
 
         def al_exito() -> None:
-            self._hw_fan_cpu, self._hw_fan_gpu = cpu, gpu
+            self._fan_en_vuelo = False
+            self._hw_fan = (cpu or 0, gpu or 0)
 
+        def al_fallo() -> None:
+            # El siguiente tic devuelve los controles a lo que diga el hardware.
+            self._fan_en_vuelo = False
+
+        self._fan_en_vuelo = True
         self._lanzar_escritura(
             lambda cb: self._control.escribir_ventiladores(cpu, gpu, al_terminar=cb),
             al_exito,
-            lambda: None,
+            al_fallo,
         )
         return GLib.SOURCE_REMOVE
 
@@ -1827,6 +2473,77 @@ class VentanaNitro(Adw.ApplicationWindow):
             lambda cb: self._control.escribir_overdrive(deseado, al_terminar=cb),
             al_exito,
             al_fallo,
+        )
+
+    def _al_cambiar_tecla(self, *_args) -> None:
+        """Tecla de modo: recorrer los modos o Turbo si/no."""
+        if self._cargando or self._combo_tecla is None or self._hw_tecla_modo is None:
+            return
+        indice = self._combo_tecla.get_selected()
+        if not 0 <= indice < len(OPCIONES_TECLA_MODO):
+            return
+        deseado = OPCIONES_TECLA_MODO[indice][0]
+        if deseado == self._hw_tecla_modo:
+            return
+        previo = self._hw_tecla_modo
+
+        def al_fallo() -> None:
+            self._cargando = True
+            self._combo_tecla.set_selected(0 if previo else 1)
+            self._cargando = False
+
+        def al_exito() -> None:
+            self._hw_tecla_modo = deseado
+
+        self._lanzar_escritura(
+            lambda cb: self._control.escribir_tecla_modo(deseado, al_terminar=cb),
+            al_exito, al_fallo,
+        )
+
+    def _refrescar_calibracion(self) -> None:
+        """Relee si hay una calibracion en marcha (4,9 ms de WMI, bajo demanda)."""
+        if self._fila_calibracion is None:
+            return
+        self._hw_calibracion = self._control.leer_calibracion()
+        self._pintar_calibracion()
+
+    def _al_pulsar_calibracion(self, _boton) -> None:
+        """Detener va directo; empezar, solo tras el dialogo de NitroSense.
+
+        Detener no puede hacer dano, asi que no se pregunta.  Empezar SI: es
+        la unica razon por la que esta funcion no estaba en la interfaz (antigua
+        regla 15), y la condicion con la que el usuario la pidio es que fuese
+        como en Windows, con sus avisos delante.
+        """
+        if self._hw_calibracion:
+            self._lanzar_escritura(
+                lambda cb: self._control.escribir_calibracion(False, al_terminar=cb),
+                self._refrescar_calibracion, self._refrescar_calibracion,
+            )
+            return
+        # NitroSense exige el cargador; aqui se comprueba en el momento, no con
+        # la lectura de hace hasta 10 s.
+        if sysfs.en_corriente() is not True:
+            self._notificar("Conecta el cargador: la calibracion lo necesita durante todo el proceso.")
+            return
+        dialogo = Adw.AlertDialog(
+            heading="Calibrar la bateria",
+            body=AVISO_CALIBRACION,
+        )
+        dialogo.add_response("cancelar", "Cancelar")
+        dialogo.add_response("calibrar", "Empezar la calibracion")
+        dialogo.set_response_appearance("calibrar", Adw.ResponseAppearance.SUGGESTED)
+        dialogo.set_default_response("cancelar")
+        dialogo.set_close_response("cancelar")
+        dialogo.connect("response", self._al_responder_calibracion)
+        dialogo.present(self)
+
+    def _al_responder_calibracion(self, _dialogo, respuesta: str) -> None:
+        if respuesta != "calibrar":
+            return
+        self._lanzar_escritura(
+            lambda cb: self._control.escribir_calibracion(True, al_terminar=cb),
+            self._refrescar_calibracion, self._refrescar_calibracion,
         )
 
     def _al_cambiar_salud(self, *_args) -> None:

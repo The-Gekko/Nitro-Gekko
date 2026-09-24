@@ -1,0 +1,16 @@
+[Unit]
+Description=Reponer el modo de Nitro Gekko al enchufar o desenchufar el cargador
+Documentation=https://github.com/The-Gekko/Nitro-Gekko
+# La arranca udev (98-nitro-gekko-corriente.rules) en cada cambio del cargador;
+# no tiene [Install] porque nadie la tiene que activar.  Es el «al conectar el
+# adaptador de CA, se restaurara el ajuste de modo» de NitroSense: el driver
+# recuerda un modo por fuente solo mientras el modulo esta cargado, y esto
+# repone el que Nitro Gekko tiene anotado para la fuente nueva.
+ConditionPathExists=/var/lib/nitro-gekko/estado
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nitro-gekko/nitro-gekko-restaurar --corriente
+# Como el servicio de arranque: nunca falla, lo que no puede reponer lo dice
+# en el journal.  journalctl -u nitro-gekko-corriente
+SuccessExitStatus=0
