@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+#
+# linuwu_sense SIN DKMS, para Solus.  Lo instala instalar-rgb-solus.sh en
+# /usr/lib/nitro-gekko-rgb/ y lo llama nitro-gekko-rgb-solus.service en cada
+# arranque.
+#
+#   compilar [KVER]   compila el modulo para KVER (por omision, el kernel en
+#                     marcha) y lo deja en /usr/lib/modules/KVER/updates/.
+#                     Tarda unos 3 s.  Necesita gcc, make y los headers.
+#   arrancar          lo que hace el servicio: si el kernel es nuevo, compila;
+#                     despues cambia acer_wmi por linuwu_sense.  Si no puede,
+#                     deja acer_wmi (con predator_v4) para que NUNCA se arranque
+#                     sin perfiles.
+#   estado            que driver hay y para que kernels esta compilado.  No
+#                     necesita root.
+#
+# La red de seguridad de verdad no es este script sino la linea 'install' de
+# /etc/modprobe.d/nitro-gekko-rgb.conf: si linuwu_sense no carga, carga
+# acer_wmi.  Este script solo evita tener que reiniciar dos veces tras una
+# actualizacion del kernel.
+#
+set -uo pipefail
+
+KO="linuwu_sense.ko"
+
+log() { echo "nitro-gekko-rgb: $*"; }
+
+ruta_ko() { echo "/usr/lib/modules/$1/updates/$KO"; }
+
+# El fuente que dejo instalar-rgb-solus.sh.  Se busca por prefijo y no por
+# version, para que cambiar la version en rgb/dkms.conf no obligue a tocar
+# este fichero.  El instalador borra los de versiones anteriores, asi que hay
+# uno solo; si hubiera varios, se coge el de version mas alta.
+fuente() {
+    local d
+    d="$(printf '%s\n' /usr/src/linuwu-sense-*/ | sort -V | tail -1)"
+    [[ -d "$d/src" ]] && echo "${d%/}"
+}
+
+compilar() {
+    local k="${1:-$(uname -r)}" tmp destino src
+    destino="$(ruta_ko "$k")"
+    if [[ ! -d "/usr/lib/modules/$k/build/include" ]]; then
+        case "$k" in
+            *.lts) log "$k: faltan los headers (sudo eopkg install linux-lts-headers)" ;;
+            *)     log "$k: faltan los headers (sudo eopkg install linux-current-headers)" ;;
+        esac
+        return 2
+    fi
+    src="$(fuente)" || { log "no hay fuente en /usr/src/linuwu-sense-*"; return 2; }
+    # Se recompila tambien si el fuente es mas nuevo que el .ko (reinstalacion).
+    if [[ -f "$destino" && ! "$src/src/linuwu_sense.c" -nt "$destino" ]]; then
+        return 0
+    fi
+    # Fuera de /usr/src: kbuild ensucia el directorio con .o, .cmd, etc.
+    tmp="$(mktemp -d /var/tmp/linuwu-sense.XXXXXX)" || return 1
+    cp -a "$src/src" "$src/Makefile" "$tmp/"
+    if make -C "$tmp" KVER="$k" >"$tmp/build.log" 2>&1 \
+       && install -Dm644 "$tmp/src/$KO" "$destino"; then
+        depmod -a "$k"
+        log "$k: compilado e instalado en $destino"
+        rm -rf "$tmp"
+        return 0
+    fi
+    log "$k: la compilacion ha fallado; log en $tmp/build.log"
+    tail -15 "$tmp/build.log" | sed 's/^/    /'
+    return 1
+}
+
+# Kernels desinstalados: eopkg borra lo suyo pero no nuestro .ko, y el
+# directorio se quedaria para siempre.  Sin kernel/ no hay kernel.
+limpiar() {
+    local d
+    for d in /usr/lib/modules/*/; do
+        [[ -d "$d/kernel" ]] && continue
+        [[ -f "$d/updates/$KO" ]] || continue
+        rm -f "$d/updates/$KO" && log "quitado $d/updates/$KO (kernel desinstalado)"
+        rmdir "$d/updates" "$d" 2>/dev/null || true
+    done
+}
+
+cargado() { grep -q "^$1 " /proc/modules; }
+
+arrancar() {
+    local k perfil
+    k="$(uname -r)"
+    limpiar
+    compilar "$k"
+
+    if cargado linuwu_sense; then
+        log "linuwu_sense ya cargado"
+        return 0
+    fi
+    if [[ ! -f "$(ruta_ko "$k")" ]]; then
+        log "sin linuwu_sense para $k: se queda acer_wmi (perfiles si, RGB no)"
+        cargado acer_wmi || modprobe acer_wmi
+        return 0
+    fi
+
+    perfil="$(cat /sys/firmware/acpi/platform_profile 2>/dev/null || true)"
+    cargado acer_wmi && modprobe -r acer_wmi
+    if modprobe --ignore-install linuwu_sense; then
+        log "acer_wmi -> linuwu_sense"
+        sleep 2
+        [[ -n "$perfil" ]] && echo "$perfil" > /sys/firmware/acpi/platform_profile 2>/dev/null
+    else
+        log "linuwu_sense no carga en $k: vuelvo a acer_wmi"
+        modprobe acer_wmi
+    fi
+    return 0
+}
+
+estado() {
+    local d k
+    if cargado linuwu_sense; then echo "driver: linuwu_sense (perfiles + RGB)"
+    elif cargado acer_wmi; then echo "driver: acer_wmi (perfiles, sin RGB)"
+    else echo "driver: NINGUNO (sin perfiles ni RPM: reinicia, o mira journalctl -b -u nitro-gekko-rgb-solus)"; fi
+    echo "fuente: $(fuente || echo 'NO HAY (reinstala con sudo ./packaging/instalar-rgb.sh)')"
+    for d in /usr/lib/modules/*/; do
+        [[ -d "$d/kernel" ]] || continue
+        k="${d%/}"; k="${k##*/}"
+        if [[ -f "$d/updates/$KO" ]]; then echo "  $k: compilado"
+        else echo "  $k: SIN compilar (se hara al arrancar con el)"; fi
+    done
+}
+
+case "${1:-}" in
+    compilar) [[ $EUID -eq 0 ]] || { echo "Hace falta root"; exit 1; }; compilar "${2:-}" ;;
+    arrancar) [[ $EUID -eq 0 ]] || { echo "Hace falta root"; exit 1; }; arrancar ;;
+    estado)   estado ;;
+    *) echo "Uso: $0 compilar [KVER] | arrancar | estado"; exit 2 ;;
+esac

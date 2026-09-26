@@ -6,7 +6,7 @@ body:
     attributes:
       value: >-
         Este proyecto esta escrito y medido en **un** portatil (Acer Nitro
-        AN17-51, Arch, GNOME 50). Cuanto mas se parezca tu informe a una medida
+        AN17-51, Arch y Solus, GNOME 50). Cuanto mas se parezca tu informe a una medida
         y menos a una impresion, mas facil es arreglarlo.
 
   - type: textarea
@@ -28,9 +28,11 @@ body:
       value: |
         cat /sys/class/dmi/id/product_name
         cat /sys/class/dmi/id/board_name
+        grep PRETTY_NAME /etc/os-release
         uname -r
         gnome-shell --version
-        dkms status
+        dkms status                                              # en Arch
+        /usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus estado    # en Solus
         cat /sys/firmware/acpi/platform_profile_choices
         ls /sys/devices/platform/acer-wmi/
       render: shell
@@ -60,6 +62,7 @@ body:
     attributes:
       label: Como lo instalaste
       options:
+        - ./instalar.sh (instalacion facil)
         - packaging/install.sh (modo polkit, el de por defecto)
         - packaging/install.sh --con-udev
         - Paquete del AUR

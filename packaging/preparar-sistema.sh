@@ -26,6 +26,11 @@
 #   DIR_POWERCAP   directorio de la interfaz RAPL.  Por omision
 #                  /sys/class/powercap.  Sirve para ver el paso 3 en un equipo
 #                  sin RAPL de Intel (cualquier Nitro con CPU AMD, por ejemplo).
+#   OS_RELEASE     fichero os-release.  Por omision /etc/os-release.  Sirve
+#                  para ver los avisos de Arch desde Solus, o al reves.
+#
+# Vale para Arch y para Solus.  Lo unico que cambia entre las dos son las
+# ordenes que se sugieren (pacman o eopkg).
 #
 set -uo pipefail
 
@@ -59,6 +64,18 @@ info(){ echo "        $*"; }
 
 CAMBIOS=0
 PENDIENTE_REINICIO=0
+
+# Arch o Solus, las dos distribuciones que mantiene el proyecto.  Solo decide
+# que orden se sugiere en los avisos (pacman o eopkg).  OS_RELEASE permite ver
+# los avisos de la otra sin tenerla delante (solo con --revisar).
+DISTRO="$(
+    f="${OS_RELEASE:-/etc/os-release}"
+    case " $(sed -n 's/^ID=//p; s/^ID_LIKE=//p' "$f" 2>/dev/null | tr -d '"' | tr '\n' ' ') " in
+        *" solus "*) echo solus ;;
+        *" arch "*)  echo arch ;;
+        *)           echo otra ;;
+    esac
+)"
 
 [[ $EUID -eq 0 || "$MODO" == "revisar" ]] || {
     echo "Hace falta root.  Usa:  sudo $0   (o --revisar para solo diagnosticar)"
@@ -157,15 +174,25 @@ elif [[ -d /sys/module/acer_wmi ]]; then
     DRIVER="acer_wmi"
 fi
 
-if [[ "$DRIVER" == "linuwu_sense" ]]; then
+# EN SOLUS ES DISTINTO: alli el fichero NO es inerte con linuwu_sense al mando.
+# La lista negra de packaging/solus/ lleva una red de seguridad que, si
+# linuwu_sense no carga tras un kernel nuevo, carga acer_wmi, y lo que le da
+# los perfiles es este predator_v4=1.  Antes este paso se lo saltaba al ver
+# linuwu_sense, y tras una desinstalacion a medias el RGB ya no se dejaba
+# reinstalar (comprobado el 2026-09-25).
+if [[ "$DRIVER" == "linuwu_sense" && "$DISTRO" != solus ]]; then
     ok "driver al mando: linuwu_sense  (lo instala instalar-rgb.sh; incluye el RGB)"
     info "acer_wmi no se toca: linuwu_sense lo sustituye y lo deja en lista negra."
     [[ -f "$CONF_ACER" ]] && \
         info "$CONF_ACER existe, pero es inerte mientras linuwu_sense este cargado."
 elif [[ -f "$CONF_ACER" ]] && grep -q "predator_v4=1" "$CONF_ACER"; then
     ok "$CONF_ACER ya lo tiene"
+    [[ "$DRIVER" == "linuwu_sense" ]] && \
+        info "linuwu_sense al mando; en Solus este fichero es el de la red de seguridad del RGB."
 else
     falta "$CONF_ACER sin predator_v4=1"
+    [[ "$DRIVER" == "linuwu_sense" ]] && \
+        info "En Solus hace falta aunque mande linuwu_sense: es lo que usa su red de seguridad."
     if [[ "$MODO" == "aplicar" ]]; then
         # OJO: aqui habia un '>' a secas.  /etc/modprobe.d/acer-wmi.conf es un
         # nombre generico que puede existir ya con opciones puestas por la
@@ -177,6 +204,9 @@ else
             fi
             printf '\n' >> "$CONF_ACER"
         fi
+        # Solus es stateless: un /etc recien instalado casi no trae nada, y
+        # un directorio de /etc puede no existir hasta que alguien lo crea.
+        install -d "$(dirname "$CONF_ACER")"
         {
             printf '%s\n' "$MARCA_ACER"
             printf '%s\n' '# El AN17-51 no esta en la tabla de quirks DMI de acer-wmi, asi que hay que'
@@ -184,7 +214,8 @@ else
             printf '%s\n' '# hwmon con las RPM de los ventiladores.'
             printf '%s\n' '#'
             printf '%s\n' '# Si instalas el teclado RGB (packaging/instalar-rgb.sh), linuwu_sense pasa'
-            printf '%s\n' '# a sustituir a acer_wmi y este fichero se queda inerte.'
+            printf '%s\n' '# a sustituir a acer_wmi y este fichero se queda inerte.  En Solus no: lo'
+            printf '%s\n' '# usa la red de seguridad de packaging/solus/ si linuwu_sense no carga.'
             printf '%s\n' '# Para quitarlo:  sudo ./packaging/preparar-sistema.sh --revertir'
             printf '%s\n' 'options acer_wmi predator_v4=1'
         } >> "$CONF_ACER"
@@ -195,7 +226,12 @@ fi
 if [[ "$MODO" == "revertir" ]]; then
     # Solo se borra lo que pusimos NOSOTROS.  Un 'rm -f' incondicional se
     # llevaba por delante las opciones de acer_wmi que hubiera antes.
-    if [[ -f "$COPIA_ACER" ]]; then
+    # Y en Solus, no mientras siga el driver del RGB: sin este fichero su red de
+    # seguridad cargaria un acer_wmi sin perfiles (regla 25 del README).
+    if [[ "$DISTRO" == solus && -f /etc/modprobe.d/nitro-gekko-rgb.conf ]]; then
+        falta "$CONF_ACER se deja: el driver del RGB sigue instalado y lo necesita"
+        info "Revierte antes el RGB:  sudo ./packaging/instalar-rgb.sh --revertir"
+    elif [[ -f "$COPIA_ACER" ]]; then
         mv -f "$COPIA_ACER" "$CONF_ACER" && ok "restaurado $CONF_ACER tal como estaba" \
             && PENDIENTE_REINICIO=1
     elif [[ -f "$CONF_ACER" ]] && grep -qF "$MARCA_ACER" "$CONF_ACER"; then
@@ -265,11 +301,21 @@ if [[ -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
         info "temperatura de bateria: lectura descartada (bruto '${TEMP_BAT:-nada}')"
         info "   el EC devuelve valores imposibles de vez en cuando; vuelve a mirar."
     fi
+elif [[ -e /sys/devices/platform/acer-wmi/nitro_sense/battery_limiter ]]; then
+    # El limite ya no depende de este modulo: linuwu_sense lo da por el EC.
+    # Antes se decia «la app no podra tocar el limite de carga» tambien aqui,
+    # y era falso.
+    ok "limite de carga por linuwu_sense (nitro_sense/battery_limiter)"
+    info "sin acer-wmi-battery solo falta la temperatura de la bateria"
 else
-    falta "sin acer-wmi-battery: la app no podra tocar el limite de carga"
-    info "Instalalo desde AUR:   yay -S acer-wmi-battery-dkms-git"
-    info "Y asegura la carga temprana:"
-    info "   echo acer_wmi_battery | sudo tee /etc/modules-load.d/acer-wmi-battery.conf"
+    falta "sin limite de carga: ni acer-wmi-battery ni el de linuwu_sense"
+    info "El de linuwu_sense llega con el driver del teclado RGB:"
+    info "   sudo ./packaging/instalar-rgb.sh"
+    if [[ "$DISTRO" == arch ]]; then
+        info "O el modulo aparte, desde AUR:   yay -S acer-wmi-battery-dkms-git"
+        info "Y asegura la carga temprana:"
+        info "   echo acer_wmi_battery | sudo tee /etc/modules-load.d/acer-wmi-battery.conf"
+    fi
 fi
 
 # Carga temprana: sin esto, tras un reinicio el modulo puede no estar cargado
@@ -281,7 +327,8 @@ if [[ -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
     else
         falta "sin carga temprana del modulo de bateria"
         if [[ "$MODO" == "aplicar" ]]; then
-            echo acer_wmi_battery > "$CONF_CARGA" && ok "escrito $CONF_CARGA" && CAMBIOS=1
+            install -d "$(dirname "$CONF_CARGA")" \
+                && echo acer_wmi_battery > "$CONF_CARGA" && ok "escrito $CONF_CARGA" && CAMBIOS=1
         fi
     fi
 fi
@@ -316,9 +363,23 @@ NOMINAL="$(leer_w "$RAPL/constraint_0_max_power_uw" || true)"
 
 if [[ "$MODO" == "revertir" ]]; then
     if [[ -f "$UNIDAD" ]]; then
+        # Se devuelve AHORA el PL1 que tenia el firmware, anotado en la propia
+        # unidad al crearla.  Antes se dejaba el de la unidad hasta reiniciar,
+        # y eso era una trampa: desinstalar y volver a instalar sin reiniciar
+        # encontraba el PL1 ya en la potencia base, decia «tu firmware no lo
+        # infla» y NO creaba la unidad; al siguiente arranque el firmware lo
+        # subia otra vez (100 W medidos aqui) y ya nadie lo bajaba.  Comprobado
+        # el 2026-09-25.  Una unidad de una version anterior no lleva la nota,
+        # y entonces se hace como antes.
+        ANTES_UW="$(sed -n 's/^# pl1-firmware-uw=\([0-9]\+\)$/\1/p' "$UNIDAD" | head -1)"
         systemctl disable --now rapl-pl1.service >/dev/null 2>&1
         rm -f "$UNIDAD"; systemctl daemon-reload
-        ok "rapl-pl1.service eliminado (el PL1 vuelve al valor del firmware al reiniciar)"
+        ok "rapl-pl1.service eliminado"
+        if [[ -n "$ANTES_UW" ]] && echo "$ANTES_UW" > "$RAPL/constraint_0_power_limit_uw" 2>/dev/null; then
+            ok "PL1 devuelto a $(( ANTES_UW / 1000000 )) W, lo que tenia el firmware antes de instalar"
+        else
+            info "el PL1 sigue en ${PL1_ACTUAL:-?} W hasta reiniciar; despues vuelve el del firmware"
+        fi
     else
         info "rapl-pl1.service no estaba"
     fi
@@ -349,7 +410,11 @@ else
     falta "el firmware sostiene ${PL1_ACTUAL:-?} W sobre un chip de ${NOMINAL} W nominales"
     if [[ "$MODO" == "aplicar" ]]; then
         OBJETIVO_UW=$(( NOMINAL * 1000000 ))
+        # La primera linea anota el PL1 del firmware, para que --revertir lo
+        # pueda devolver sin esperar a reiniciar (ver la rama de revertir).
+        ANTES_UW="$(cat "$RAPL/constraint_0_power_limit_uw" 2>/dev/null || true)"
         cat > "$UNIDAD" <<UNIT
+# pl1-firmware-uw=${ANTES_UW}
 [Unit]
 Description=Limitar PL1 de la CPU a ${NOMINAL}W (potencia base declarada por el chip; el firmware Acer la sobrepasa)
 After=multi-user.target suspend.target hibernate.target hybrid-sleep.target
@@ -390,7 +455,11 @@ titulo "4. power-profiles-daemon  —  la trampa del perfil pegado"
 # medido, 3237 rpm frente a 1661 en 'quiet', para ganar 1 grado.
 if ! systemctl is-active power-profiles-daemon >/dev/null 2>&1; then
     falta "power-profiles-daemon no esta activo"
-    info "Instalalo con:  sudo pacman -S power-profiles-daemon"
+    if [[ "$DISTRO" == solus ]]; then
+        info "Instalalo con:  sudo eopkg install power-profiles-daemon"
+    else
+        info "Instalalo con:  sudo pacman -S power-profiles-daemon"
+    fi
 else
     ok "power-profiles-daemon activo"
     DRV="$(powerprofilesctl list 2>/dev/null | grep -m1 PlatformDriver | awk '{print $2}')"
@@ -457,7 +526,8 @@ if [[ -n "$USUARIO" ]]; then
             fi
         fi
     else
-        falta "extension no instalada"
+        # Es opcional (install.sh --sin-extension): la aplicacion no la necesita.
+        info "extension no instalada (es opcional; la aplicacion funciona sin ella)"
         info "La instala:  sudo ./packaging/install.sh"
     fi
 else

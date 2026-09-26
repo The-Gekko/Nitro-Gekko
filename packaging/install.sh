@@ -7,6 +7,8 @@
 #  USO
 #    sudo ./packaging/install.sh                 instala en el sistema (polkit)
 #    sudo ./packaging/install.sh --con-udev      instala Y abre /sys a 'wheel'
+#    sudo ./packaging/install.sh --sin-extension instala sin la extension de
+#                                                GNOME Shell
 #    sudo ./packaging/install.sh --uninstall     desinstala
 #    DESTDIR=/tmp/prueba ./packaging/install.sh  instala en un arbol falso
 #                                                (no toca el sistema, no pide root)
@@ -21,6 +23,10 @@
 #  refresca las caches del escritorio y NO toca /sys: solo construye el arbol
 #  de ficheros. Es la forma de revisar que va a instalar antes de dejarle
 #  tocar el equipo de verdad.
+#
+#  Vale igual para Arch y para Solus, que son las dos distribuciones que
+#  mantiene el proyecto: lo unico que cambia entre ellas son las ordenes que
+#  se sugieren en los avisos (pacman o eopkg).
 # ============================================================================
 
 set -euo pipefail
@@ -76,6 +82,16 @@ readonly FICHERO_UNIDAD_CORRIENTE="nitro-gekko-corriente.service"
 readonly FICHERO_UNIDAD_PERFIL="nitro-gekko-perfil.service"
 readonly FICHERO_PATH_PERFIL="nitro-gekko-perfil.path"
 readonly FICHERO_UDEV_CORRIENTE="98-nitro-gekko-corriente.rules"
+# Preset de systemd que declara activadas las dos unidades con [Install].
+# Hace falta en Solus: tras cada operacion de eopkg, usysconf ejecuta
+# 'systemctl preset' sobre todas las unidades de /usr/lib/systemd/system, y
+# el 99-default.preset de Solus dice 'disable *'.  Sin este fichero, la
+# primera actualizacion desactivaba en silencio nitro-gekko-restaurar.service
+# y nitro-gekko-perfil.path (comprobado el 2026-09-25: activadas a las 22:50,
+# desactivadas tras un 'eopkg install' a las 22:53).  En Arch no molesta:
+# pacman no aplica presets, y 'systemctl preset' daria lo mismo.
+readonly DIR_PRESET="${PREFIX}/lib/systemd/system-preset"
+readonly FICHERO_PRESET="50-nitro-gekko.preset"
 
 # Modo de privilegios.  Por DEFECTO solo polkit: la aplicacion llama al helper
 # por pkexec y GNOME pide la contrasena.  Con --con-udev se instalan ademas las
@@ -83,6 +99,29 @@ readonly FICHERO_UDEV_CORRIENTE="98-nitro-gekko-corriente.rules"
 # a cambio de que CUALQUIER proceso del usuario pueda escribir ahi sin
 # autenticarse.  Ver la seccion 'Seguridad y permisos' del README.
 CON_UDEV=0
+
+# La extension de GNOME Shell es opcional: la aplicacion no la necesita para
+# nada.  Con --sin-extension no se copia; si ya estaba de una instalacion
+# anterior, se deja como esta (la quita --uninstall).
+SIN_EXTENSION=0
+
+# ---------------------------------------------------------------------------
+#  Distribucion: Arch o Solus
+#
+#  Solo cambia las ordenes que se sugieren en los avisos.  Se lee ID e ID_LIKE
+#  de os-release; OS_RELEASE permite probar los avisos de la otra distribucion
+#  sin tenerla delante.
+# ---------------------------------------------------------------------------
+distro() {
+    local id="" id_like=""
+    id="$(sed -n 's/^ID=//p' "${OS_RELEASE:-/etc/os-release}" 2>/dev/null | tr -d '"')"
+    id_like="$(sed -n 's/^ID_LIKE=//p' "${OS_RELEASE:-/etc/os-release}" 2>/dev/null | tr -d '"')"
+    case " $id $id_like " in
+        *" solus "*) echo solus ;;
+        *" arch "*)  echo arch ;;
+        *)           echo otra ;;
+    esac
+}
 
 # ---------------------------------------------------------------------------
 #  Salida por pantalla
@@ -265,14 +304,25 @@ comprobar_modulo() {
         hay_problema=1
     fi
 
-    if [[ ! -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
-        aviso_contado "No esta el modulo DKMS acer-wmi-battery (health_mode no existe)."
-        aviso_contado "Sin el, la aplicacion no podra limitar la carga de la bateria al 80%."
-        aviso_contado "Es un modulo aparte, no viene con el kernel; esta en el AUR:"
-        aviso_contado "    yay -S acer-wmi-battery-dkms-git"
-        aviso_contado "Despues, 'sudo ./packaging/preparar-sistema.sh' le pone la carga temprana."
-    else
+    # El limite del 80 % tiene dos caminos (README, «Overdrive del panel y
+    # limite de carga por el EC»).  Antes aqui solo se miraba acer-wmi-battery,
+    # y con linuwu_sense cargado se avisaba de que no habria limite cuando si
+    # lo habia.  En Solus el aviso era ademas imposible de seguir: ese modulo
+    # solo esta en el AUR.
+    if [[ -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
         ok "acer-wmi-battery presente (limite de carga disponible)."
+    elif [[ -e /sys/devices/platform/acer-wmi/nitro_sense/battery_limiter ]]; then
+        ok "limite de carga al 80% por linuwu_sense (nitro_sense/battery_limiter)."
+        info "Sin acer-wmi-battery solo falta la temperatura de la bateria."
+    else
+        aviso_contado "No hay limite de carga: ni acer-wmi-battery ni nitro_sense/battery_limiter."
+        aviso_contado "El de linuwu_sense llega con el driver del teclado RGB:"
+        aviso_contado "    sudo ./packaging/instalar-rgb.sh"
+        if [[ "$(distro)" == arch ]]; then
+            aviso_contado "O con el modulo DKMS aparte, que esta en el AUR:"
+            aviso_contado "    yay -S acer-wmi-battery-dkms-git"
+            aviso_contado "Despues, 'sudo ./packaging/preparar-sistema.sh' le pone la carga temprana."
+        fi
     fi
 
     if (( hay_problema )); then
@@ -509,6 +559,12 @@ instalar() {
                 aviso_contado "Falta packaging/$pieza: el modo no se recordara por fuente."
             fi
         done
+        if [[ -f "$RAIZ/packaging/$FICHERO_PRESET" ]]; then
+            poner 644 "$RAIZ/packaging/$FICHERO_PRESET" "$DIR_PRESET/$FICHERO_PRESET" || true
+        else
+            aviso_contado "Falta packaging/$FICHERO_PRESET: en Solus, la siguiente"
+            aviso_contado "actualizacion con eopkg desactivaria las unidades de Nitro Gekko."
+        fi
         if [[ -f "$RAIZ/packaging/$FICHERO_UDEV_CORRIENTE" ]]; then
             if command -v udevadm >/dev/null \
                && ! udevadm verify "$RAIZ/packaging/$FICHERO_UDEV_CORRIENTE" >/dev/null 2>&1; then
@@ -734,7 +790,10 @@ LANZADOR
     # -- extension de GNOME Shell (en el HOME del usuario, no en /usr) --------
     titulo "5. Extension de GNOME Shell"
     local uuid
-    if uuid="$(uuid_extension)" && [[ -n "$uuid" ]]; then
+    if (( SIN_EXTENSION )); then
+        info "Omitida a peticion (--sin-extension). La aplicacion no la necesita."
+        info "Para ponerla mas adelante: sudo $0"
+    elif uuid="$(uuid_extension)" && [[ -n "$uuid" ]]; then
         info "UUID leido de extension/metadata.json: $uuid"
         if poner_arbol "$RAIZ/extension" "${DIR_EXTENSIONES}/${uuid}"; then
             # La extension es del usuario, no de root.
@@ -782,7 +841,11 @@ refrescar_caches() {
         fi
     else
         aviso_contado "falta gtk-update-icon-cache: el icono puede no aparecer."
-        aviso_contado "    sudo pacman -S gtk-update-icon-cache"
+        if [[ "$(distro)" == solus ]]; then
+            aviso_contado "    sudo eopkg install libgtk-3"
+        else
+            aviso_contado "    sudo pacman -S gtk-update-icon-cache"
+        fi
     fi
 
     if command -v update-desktop-database >/dev/null; then
@@ -959,6 +1022,7 @@ desinstalar() {
         "$DIR_SYSTEMD/$FICHERO_UNIDAD_CORRIENTE" \
         "$DIR_SYSTEMD/$FICHERO_UNIDAD_PERFIL" \
         "$DIR_SYSTEMD/$FICHERO_PATH_PERFIL" \
+        "$DIR_PRESET/$FICHERO_PRESET" \
         "$DIR_UDEV/$FICHERO_UDEV_CORRIENTE" \
         "$DIR_UDEV/$FICHERO_UDEV" \
         "$DIR_TMPFILES/$FICHERO_TMPFILES" \
@@ -1064,6 +1128,7 @@ desinstalar() {
         "$DIR_SYSTEMD/$FICHERO_UNIDAD_CORRIENTE" \
         "$DIR_SYSTEMD/$FICHERO_UNIDAD_PERFIL" \
         "$DIR_SYSTEMD/$FICHERO_PATH_PERFIL" \
+        "$DIR_PRESET/$FICHERO_PRESET" \
         "$DIR_UDEV/$FICHERO_UDEV_CORRIENTE" \
         "$DIR_UDEV/$FICHERO_UDEV" \
         "$DIR_TMPFILES/$FICHERO_TMPFILES" \
@@ -1122,6 +1187,11 @@ $APP_NOMBRE - instalador de la aplicacion
         Instala y ademas abre seis rutas de /sys al grupo 'wheel'.  Sin
         dialogo de contrasena, pero cualquier proceso tuyo puede escribir ahi.
 
+    sudo $0 --sin-extension
+        Instala sin la extension de GNOME Shell.  Se puede combinar con
+        --con-udev.  La aplicacion funciona igual; solo falta el atajo de
+        Configuracion rapida.
+
     sudo $0 --uninstall
         Desinstala todo lo que puso, y lo comprueba fichero a fichero.
 
@@ -1156,13 +1226,16 @@ $APP_NOMBRE - instalador de la aplicacion
     0644  ${DIR_UDEV}/${FICHERO_UDEV_CORRIENTE}
           no abre permisos: arranca ${FICHERO_UNIDAD_CORRIENTE} al enchufar
           o desenchufar el cargador
+    0644  ${DIR_PRESET}/${FICHERO_PRESET}
+          para que usysconf (Solus) no desactive las unidades en cada eopkg
     0644  ${DIR_POLKIT}/${FICHERO_POLICY}
     0644  ${DIR_APP}/gekkonitro/*.py       (directorios 0755)
     0755  ${DIR_BIN}/${APP_BIN}
     0644  ${DIR_DESKTOP}/${APP_ID}.desktop
     0644  ${DIR_ICONOS}/<tamano>/apps/${APP_ID}.*
     0644  ${DIR_ESQUEMAS}/${APP_ID}.gschema.xml   (si existe)
-          \$HOME/.local/share/gnome-shell/extensions/<uuid>/   (del usuario)
+          \$HOME/.local/share/gnome-shell/extensions/<uuid>/   (del usuario;
+          no con --sin-extension)
 
   Que instala SOLO con --con-udev:
     0644  ${DIR_UDEV}/${FICHERO_UDEV}
@@ -1191,6 +1264,7 @@ main() {
         case "$1" in
             --uninstall|--desinstalar) accion="desinstalar" ;;
             --con-udev)                CON_UDEV=1 ;;
+            --sin-extension)           SIN_EXTENSION=1 ;;
             -h|--help|--ayuda)         ayuda; exit 0 ;;
             *) error "Opcion desconocida: $1"; ayuda; exit 2 ;;
         esac

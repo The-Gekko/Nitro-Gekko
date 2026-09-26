@@ -1,0 +1,14 @@
+# Nitro Gekko: unidades que tienen que quedar activadas.
+#
+# Lo instala packaging/install.sh en /usr/lib/systemd/system-preset/.  Hace
+# falta en Solus: tras cada operacion de eopkg, usysconf ejecuta
+# 'systemctl preset' sobre las unidades de /usr/lib/systemd/system, y el
+# 99-default.preset de Solus dice 'disable *'.  Sin este fichero, la primera
+# actualizacion desactivaba en silencio las dos de abajo (comprobado el
+# 2026-09-25).  En Arch no cambia nada: pacman no aplica presets.
+#
+# Solo van las unidades de /usr/lib con seccion [Install].  rapl-pl1.service y
+# nitro-gekko-rgb-solus.service viven en /etc/systemd/system, y usysconf no
+# las toca.
+enable nitro-gekko-restaurar.service
+enable nitro-gekko-perfil.path

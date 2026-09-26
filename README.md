@@ -5,13 +5,14 @@
 <h1 align="center">Nitro Gekko</h1>
 
 <p align="center">
-  Panel de control del portátil <b>Acer Nitro AN17-51</b> para GNOME.<br>
+  Panel de control del portátil <b>Acer Nitro AN17-51</b> para GNOME, en Arch Linux y en Solus.<br>
   Perfil térmico, ventiladores, límite de potencia, salud de la batería y
   teclado RGB, sin editar <code>/sys</code> a mano.
 </p>
 
 <p align="center">
   <img alt="Plataforma" src="https://img.shields.io/badge/plataforma-Arch%20Linux-1793D1?logo=archlinux&logoColor=white">
+  <img alt="Plataforma" src="https://img.shields.io/badge/plataforma-Solus-5294E2?logo=solus&logoColor=white">
   <img alt="Escritorio" src="https://img.shields.io/badge/escritorio-GNOME%2050%20%2F%20Wayland-4A86CF?logo=gnome&logoColor=white">
   <img alt="Stack" src="https://img.shields.io/badge/GTK4-libadwaita-745FB5">
   <img alt="Lenguaje" src="https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white">
@@ -26,9 +27,11 @@
 
 ## Por donde empezar
 
-**Si solo quieres usarlo:** [Requisitos](#requisitos) ·
-[Instalacion](#instalacion) · [Si tu Acer es otro
-modelo](#si-tu-acer-es-otro-modelo) · [Desinstalacion](#desinstalacion).
+**Si solo quieres usarlo:** [Instalacion
+rapida](#instalacion-rapida-y-lo-que-toca-de-tu-sistema) (una orden, en Arch o
+en Solus) · [Requisitos](#requisitos) · [Instalacion paso a
+paso](#instalacion) · [Si tu Acer es otro modelo](#si-tu-acer-es-otro-modelo) ·
+[Desinstalacion](#desinstalacion).
 
 **Si vas a tocar el codigo** —persona o agente de IA—: lee antes [Como tratar
 este programa](#como-tratar-este-programa). No es un adorno: aqui se pone un
@@ -46,38 +49,65 @@ Shell](#la-extension-de-gnome-shell).
 
 ## Instalacion rapida, y lo que toca de tu sistema
 
+El proyecto se mantiene en **dos distribuciones, Arch Linux y Solus**, y en las
+dos se instala igual: con una orden. Lo que cambia por debajo (pacman o eopkg,
+DKMS o no) lo decide el instalador.
+
 ```bash
+sudo pacman -S --needed git      # Arch
+sudo eopkg install git           # Solus: una instalacion recien hecha no lo trae
+
 git clone https://github.com/The-Gekko/Nitro-Gekko.git
 cd Nitro-Gekko
-./packaging/preparar-sistema.sh --revisar   # diagnostico: NO toca nada
-sudo ./packaging/preparar-sistema.sh        # 1. el hardware
-sudo ./packaging/instalar-rgb.sh            # 2. el driver del teclado RGB
-sudo ./packaging/install.sh                 # 3. la aplicacion
+./instalar.sh --revisar          # dice que haria: NO toca nada ni pide root
+sudo ./instalar.sh               # dependencias, hardware, driver RGB y aplicacion
 ```
 
-**Lo que tienes que saber antes del paso 2, y no despues.** Ese paso instala un
-modulo de kernel por DKMS y **pone `acer_wmi` en la lista negra**, porque los
-dos drivers reclaman los mismos GUID de WMI. A partir de ahi, los perfiles
-termicos y las RPM dependen de que ese modulo compile en cada kernel nuevo. Si
-un dia no compila, arrancas sin perfiles, sin RPM y sin RGB. No se rompe nada
-fisico y se sale con dos ordenes, que estan escritas dentro del propio
-`/etc/modprobe.d/nitro-gekko-rgb.conf`:
+| Opcion | Que cambia |
+|---|---|
+| `--sin-extension` | la aplicacion **sin** la extension de GNOME Shell, que no necesita para nada |
+| `--sin-rgb` | sin el driver del teclado RGB: **no se toca ningun modulo del kernel** |
+| `--si` | no pregunta; hace falta para lanzarlo sin terminal (con `pkexec`, por ejemplo) |
+| `--desinstalar` | lo quita todo, en orden inverso |
 
-```bash
-sudo rm /etc/modprobe.d/nitro-gekko-rgb.conf /etc/modules-load.d/linuwu-sense.conf
-echo 'options acer_wmi predator_v4=1' | sudo tee /etc/modprobe.d/acer-wmi.conf
-```
+`instalar.sh` no tiene logica propia salvo elegir los paquetes de cada
+distribucion: los instala y llama, en orden y parando si algo falla, a los tres
+scripts de `packaging/` que se describen en [Instalacion](#instalacion). Si
+prefieres ir paso a paso, alli estan las ordenes de cada distribucion.
 
-**Si no te compensa ese riesgo, saltate el paso 2.** Con los pasos 1 y 3 tienes
-perfil termico, ventiladores, PL1, turbo, bateria y temperaturas; pierdes el
-teclado RGB, el control manual de los ventiladores y el overdrive del panel, y
-**no se toca ningun modulo del kernel**. La aplicacion oculta sola lo que no
-haya.
+**Lo que tienes que saber antes del driver RGB, y no despues.** `linuwu_sense`
+**pone `acer_wmi` en la lista negra**, porque los dos drivers reclaman los
+mismos GUID de WMI. A partir de ahi, los perfiles termicos y las RPM dependen
+de que ese modulo exista para el kernel con el que arrancas, y eso se resuelve
+distinto en cada distribucion:
+
+- **En Arch lo recompila DKMS** en cada kernel nuevo. Si un dia no compila,
+  arrancas sin perfiles, sin RPM y sin RGB. No se rompe nada fisico y se sale
+  con dos ordenes, que estan escritas dentro del propio
+  `/etc/modprobe.d/nitro-gekko-rgb.conf`:
+
+  ```bash
+  sudo rm /etc/modprobe.d/nitro-gekko-rgb.conf /etc/modules-load.d/linuwu-sense.conf
+  echo 'options acer_wmi predator_v4=1' | sudo tee /etc/modprobe.d/acer-wmi.conf
+  ```
+
+- **En Solus no hay DKMS.** Lo recompila un servicio propio al arrancar con un
+  kernel nuevo (2,6 s en este equipo), y la lista negra lleva una **red de
+  seguridad**: si `linuwu_sense` no carga, carga `acer_wmi` con los perfiles.
+  Lo peor que pasa es arrancar unos segundos sin RGB. El instalador **prueba esa
+  red de verdad** antes de darse por bueno. Ver [En Solus, sin
+  DKMS](#en-solus-sin-dkms).
+
+**Si no te compensa, `--sin-rgb`.** Tienes perfil termico, ventiladores, PL1,
+turbo, bateria y temperaturas; pierdes el teclado RGB, el control manual de los
+ventiladores y el overdrive del panel (y en Solus tambien el limite de carga al
+80 %, que alli solo da este driver), y **no se toca ningun modulo del kernel**.
+La aplicacion oculta sola lo que no haya.
 
 Todo esto, con detalle y con las medidas: [Instalacion](#instalacion), [El
 riesgo real de este paso, dicho
-claro](#el-riesgo-real-de-este-paso-dicho-claro) y
-[Desinstalacion](#desinstalacion).
+claro](#el-riesgo-real-de-este-paso-dicho-claro), [En Solus, sin
+DKMS](#en-solus-sin-dkms) y [Desinstalacion](#desinstalacion).
 
 ---
 
@@ -115,22 +145,23 @@ sitio comodo lo que en este portatil solo se puede tocar escribiendo a mano en
 
 La extension anade el cambio de modo y las RPM a **Configuracion rapida**, para
 no tener que abrir la aplicacion, y ensena el modo nuevo en pantalla cuando
-cambia desde fuera (por ejemplo, con la tecla de modo).
+cambia desde fuera (por ejemplo, con la tecla de modo). Es **opcional**: con
+`--sin-extension` se instala solo la aplicacion, que no la necesita para nada.
 
 Lo que tiene NitroSense y lo que no, funcion por funcion: [NitroSense y Nitro
 Gekko, funcion por funcion](#nitrosense-y-nitro-gekko-funcion-por-funcion).
 
 ## Que resuelve
 
-En un Nitro AN17-51 con Arch, de fabrica:
+En un Nitro AN17-51 con Arch o con Solus, de fabrica:
 
 - Los perfiles termicos no aparecen hasta que cargas un driver de plataforma
   que conozca este modelo, y aun asi solo se cambian escribiendo en `/sys`
   como root.
 - El PL1 se pierde cada vez que cambias de perfil, porque el firmware lo
   reescribe por MMIO. Sin reaplicarlo, ajustar la potencia no sirve de nada.
-- El limite de carga al 80 % existe (modulo DKMS `acer-wmi-battery`) pero no
-  tiene ninguna interfaz grafica.
+- El limite de carga al 80 % existe (modulo DKMS `acer-wmi-battery`, del AUR)
+  pero no tiene ninguna interfaz grafica. En Solus ni siquiera hay paquete.
 - Las RPM de los ventiladores estan en un `hwmon` **cuyo numero cambia entre
   arranques**, asi que ni siquiera puedes dejarte un alias hecho.
 - El teclado RGB se queda **siempre naranja**, porque el `acer-wmi` de
@@ -187,6 +218,12 @@ AN17-51 (version 5.0.1327, el 23 de septiembre de 2026), no de su publicidad:
 script que repone los ajustes y la interfaz con un GTK simulado). Lo que queda
 por probar esta en la copia local, en `AGENTS.md`, apartado «Pendientes».
 
+El 2026-09-25 se instalo en **Solus 4.9**, en el mismo portatil. Ahi si estan
+comprobados los cinco perfiles, las RPM de los dos ventiladores, el driver del
+RGB con sus grupos `four_zoned_kb` y `nitro_sense`, el limite de carga por el
+EC y que la aplicacion arranca sin errores. La interfaz, funcion por funcion,
+sigue sin probar.
+
 ---
 
 ## Requisitos
@@ -196,21 +233,36 @@ mismo firmware; el instalador avisa si detecta otro equipo pero no se planta.
 Si el tuyo **no** es un AN17-51, lee [Si tu Acer es otro
 modelo](#si-tu-acer-es-otro-modelo) antes de ejecutar nada.
 
-**Sistema.** Esto ya viene en una instalacion normal de Arch con GNOME:
+**Sistema.** Casi todo viene ya en una instalacion normal de Arch o de Solus
+con GNOME; lo que falte lo pone `instalar.sh` (tabla de paquetes, justo debajo):
 
-| | Version probada | ¿Requisito duro? |
-|---|---|---|
-| GNOME Shell | 50.4 (Wayland) | **si, para la extension** (ver aviso) |
-| GTK4 | 4.22.4 | no, vale cualquier GTK 4 reciente |
-| libadwaita | 1.9.3 | 1.5+ (`Adw.AboutDialog` es de 1.5; `Adw.SpinRow` y `Adw.ToolbarView`, de 1.4) |
-| Python | 3.14.7 | 3.10+ (`@dataclass(slots=True)`) |
-| python-gobject | 3.56.3 | no |
-| polkit | para el dialogo de autorizacion (`pkexec`) | **si** en el modo por defecto |
-| systemd | 261.2 (`rapl-pl1.service` fija el PL1 en cada arranque) | **si** |
+| | Probado en Arch | Probado en Solus 4.9 | ¿Requisito duro? |
+|---|---|---|---|
+| GNOME Shell | 50.4 (Wayland) | 50.5 (Wayland) | **si, para la extension** (ver aviso) |
+| GTK4 | 4.22.4 | 4.22.5 | no, vale cualquier GTK 4 reciente |
+| libadwaita | 1.9.3 | 1.9.4 | 1.5+ (`Adw.AboutDialog` es de 1.5; `Adw.SpinRow` y `Adw.ToolbarView`, de 1.4) |
+| Python | 3.14.7 | 3.14.7 | 3.10+ (`@dataclass(slots=True)`) |
+| python-gobject | 3.56.3 | 3.56.3 | no |
+| polkit | para el dialogo de autorizacion (`pkexec`) | 127 | **si** en el modo por defecto |
+| systemd | 261.2 (`rapl-pl1.service` fija el PL1 en cada arranque) | 261.3 | **si** |
+| kernel | `linux-zen` 7.2.3 | `linux-current` 7.2.7 | no |
 
 La aplicacion no necesita nada mas: no se instala nada con `pip`.
 
-**Para el teclado RGB hacen falta dos paquetes que Arch NO trae de serie.**
+**Los paquetes, por distribucion.** Son los que instala `instalar.sh`. Los de
+Solus salen de preguntar a `eopkg search-file` por cada fichero que usa la
+aplicacion (2026-09-25), no de adivinar el nombre:
+
+| | Arch | Solus |
+|---|---|---|
+| Para clonar | `git` | `git` (Solus 4.9 recien instalado no lo trae) |
+| Aplicacion | `python python-gobject gtk4 libadwaita polkit power-profiles-daemon libxml2` | `python3 python-gobject libgtk-4 libadwaita polkit power-profiles-daemon libxml2` |
+| Driver del RGB | `dkms` y los headers del kernel con el que arrancas (`linux-zen-headers`, `linux-headers`, `linux-lts-headers`) | `gcc make binutils cpio zstd` y `linux-current-headers` (o `linux-lts-headers` si arrancas con el lts) |
+
+`libxml2` es por `xmllint`, con el que `install.sh` valida la politica polkit
+antes de instalarla.
+
+**En Arch, para el teclado RGB hacen falta dos paquetes que NO vienen de serie.**
 `instalar-rgb.sh` compila el modulo del kernel por DKMS, y eso no funciona sin
 esto (comprobado: en este equipo los dos estan «instalados explicitamente», o
 sea que los tuvo que poner el usuario, y nada mas del sistema depende de
@@ -231,6 +283,17 @@ lo ha sustituido por el del nuevo. En vez de abortar, el script compila para el
 kernel **que vas a arrancar**: te lo dice al empezar, se salta la carga en
 caliente porque un `.ko` de otro kernel no se puede cargar, y termina
 recordandote que compruebes `dkms status linuwu-sense` antes de reiniciar.
+
+**En Solus, para el teclado RGB no hay DKMS**, y en una instalacion recien
+hecha de Solus 4.9 tampoco hay compilador: ni `gcc`, ni `make`, ni los headers
+(comprobado el 2026-09-25). Hacen falta `gcc make binutils` y los headers del
+kernel en marcha: `linux-current-headers` si `uname -r` termina en `.current`,
+`linux-lts-headers` si termina en `.lts`. `cpio` y `zstd` ya vienen, y solo
+sirven para que el instalador mire si `acer_wmi` va dentro del initramfs. El
+`gcc` de Solus es el mismo con el que se compila su kernel (15.2.1 los dos,
+medido con `/proc/version`), asi que kbuild no se queja de compilador
+distinto. Lo que hace en lugar de DKMS esta en [En Solus, sin
+DKMS](#en-solus-sin-dkms).
 
 > **La extension solo carga en GNOME Shell 50.** Su `metadata.json` declara
 > `"shell-version": ["50"]` y GNOME **rechaza** una extension cuya version no
@@ -266,7 +329,8 @@ haya. Si tu equipo expone tres en vez de cinco, veras tres, no un error.
 
 **Opcional, y ya no imprescindible.** El modulo DKMS `acer-wmi-battery`, que no
 viene con el kernel. En el AUR hay dos paquetes: `acer-wmi-battery-dkms` y
-`acer-wmi-battery-dkms-git`. Aqui esta probado con el **`-git`**.
+`acer-wmi-battery-dkms-git`. Aqui esta probado con el **`-git`**. En Solus no
+hay paquete: alli el limite va siempre por el camino de `linuwu_sense`.
 
 El **limite de carga al 80 % ya no depende de el**: si no esta, la aplicacion lo
 lleva por `nitro_sense/battery_limiter`, del propio `linuwu_sense`. Lo que si se
@@ -284,8 +348,10 @@ echo 'options acer_wmi_battery enable_health_mode=1' \
 ```
 
 **Tu usuario debe poder autenticarse como administrador ante polkit.** En Arch
-eso significa estar en el grupo `wheel`. Es lo que hace que el dialogo de
-contrasena te acepte.
+y en Solus eso significa estar en el grupo `wheel`: la regla de administrador
+de polkit de los dos es `unix-group:wheel` (en Solus, en
+`/usr/share/polkit-1/rules.d/50-default.rules`). Es lo que hace que el dialogo
+de contrasena te acepte.
 
 ---
 
@@ -299,6 +365,7 @@ cuando el DMI no dice `Nitro AN17-51`.
 
 | Script | Si no eres un AN17-51 |
 |---|---|
+| `instalar.sh` | no mira el modelo: lo hacen los scripts a los que llama. Se **planta** si la distribucion no es Arch ni Solus |
 | `install.sh` | avisa y **sigue**. Solo copia ficheros; no toca hardware |
 | `preparar-sistema.sh` | avisa y sigue si eres Acer; **aborta** si no lo eres |
 | `instalar-rgb.sh` | avisa y sigue, pero **se deshace solo** si el driver nuevo no repone los perfiles ni los tacometros |
@@ -373,7 +440,8 @@ y esta desactivada, y en un equipo que no la tiene eso es mentira. Uno **en
 gris** dice «aqui no hay tal cosa», y el subtitulo explica por que y que
 instalar. Las lecturas que falten se pintan `s/d` o `—`, nunca como un cero.
 
-**Como salir de todo, en orden inverso al de instalacion:**
+**Como salir de todo, en orden inverso al de instalacion** (es lo que hace
+`sudo ./instalar.sh --desinstalar`):
 
 ```bash
 sudo ./packaging/install.sh --uninstall
@@ -381,11 +449,12 @@ sudo ./packaging/instalar-rgb.sh --revertir
 sudo ./packaging/preparar-sistema.sh --revertir
 ```
 
-Queda **un** fichero que ninguna de las tres ordenes borra: `linuwu_sense`
-guarda el ultimo estado del teclado en `/etc/four_zone_kb_state`, que escribe el
-propio modulo al descargarse (es codigo del upstream, no de este repositorio).
-Son 44 bytes binarios y no estorban a nada, pero si quieres dejarlo todo limpio:
-`sudo rm -f /etc/four_zone_kb_state`.
+Quedan **dos** ficheros que ninguna de las tres ordenes borra: `linuwu_sense`
+guarda el ultimo estado del teclado en `/etc/four_zone_kb_state` y el del perfil
+y los ventiladores en `/etc/predator_state`, y los escribe el propio modulo al
+descargarse (es codigo del upstream, no de este repositorio). Son 44 y 24 bytes
+binarios (medidos en Solus) y no estorban a nada, pero si quieres dejarlo todo
+limpio: `sudo rm -f /etc/four_zone_kb_state /etc/predator_state`.
 
 ## Anade tu modelo
 
@@ -506,6 +575,28 @@ contribucion posible.
 
 ## Instalacion
 
+Paso a paso, lo mismo que hace `instalar.sh`. Los scripts de `packaging/` son
+los mismos en las dos distribuciones; solo cambian las dependencias.
+
+**En Arch:**
+
+```bash
+sudo pacman -S --needed git python python-gobject gtk4 libadwaita polkit \
+    power-profiles-daemon libxml2
+sudo pacman -S --needed dkms linux-zen-headers   # para el RGB: los headers del
+                                                 # kernel con el que ARRANCAS
+```
+
+**En Solus:**
+
+```bash
+sudo eopkg install git python3 python-gobject libgtk-4 libadwaita polkit \
+    power-profiles-daemon libxml2
+sudo eopkg install gcc make binutils cpio zstd linux-current-headers   # para el RGB
+```
+
+**Y despues, en las dos:**
+
 ```bash
 git clone https://github.com/The-Gekko/Nitro-Gekko.git
 cd Nitro-Gekko
@@ -515,24 +606,28 @@ cd Nitro-Gekko
 ./packaging/preparar-sistema.sh --revisar
 sudo ./packaging/preparar-sistema.sh
 
-# 2. Teclado RGB (instala linuwu_sense por DKMS y aparta acer_wmi):
+# 2. Teclado RGB: instala linuwu_sense y aparta acer_wmi.  En Arch por DKMS;
+#    en Solus el mismo script lo detecta y usa packaging/solus/, sin DKMS.
 sudo ./packaging/instalar-rgb.sh
 
 # 3. Mira antes que va a instalar la aplicacion, sin tocar nada:
 DESTDIR=/tmp/prueba ./packaging/install.sh
 find /tmp/prueba
 
-# 4. Instala de verdad:
+# 4. Instala de verdad (con --sin-extension, sin la extension de GNOME Shell):
 sudo ./packaging/install.sh
 ```
 
 El paso 1 detecta que driver de plataforma tienes y se adapta: si
 `linuwu_sense` ya esta cargado **no toca `acer_wmi`**, porque el paso 2 lo deja
 en la lista negra. Puedes ejecutar los dos pasos en este orden sin que se
-pisen; si solo quieres el paso 2, tambien vale.
+pisen; en Arch, si solo quieres el paso 2, tambien vale. **En Solus el paso 2
+exige el 1**: su red de seguridad carga `acer_wmi` con el `predator_v4=1` que
+deja el paso 1, y sin el no daria perfiles (el script lo comprueba y se
+planta).
 
-Despues, activa la extension y **cierra y abre sesion** (en Wayland no vale
-`Alt+F2 r`):
+Despues, si has instalado la extension, activala y **cierra y abre sesion** (en
+Wayland no vale `Alt+F2 r`):
 
 ```bash
 gnome-extensions enable nitro-gekko@thegekko.dev
@@ -562,6 +657,13 @@ El `PKGBUILD` construye llamando al mismo `install.sh` con `DESTDIR`, `PREFIX` y
 `DIR_EXTENSIONES`, asi que no hay una segunda lista de ficheros que se pueda
 quedar desfasada.
 
+### Solus: sin paquete
+
+En Solus no hay paquete: no existe un equivalente al AUR, asi que se instala
+desde el repositorio, con `instalar.sh` o paso a paso. El driver del RGB va por
+su propio camino, sin DKMS, y esta explicado en [En Solus, sin
+DKMS](#en-solus-sin-dkms).
+
 ### Que instala
 
 ```
@@ -572,13 +674,26 @@ quedar desfasada.
 /usr/lib/systemd/system/nitro-gekko-perfil.service
 /usr/lib/systemd/system/nitro-gekko-corriente.service  repone el modo al enchufar
 /usr/lib/udev/rules.d/98-nitro-gekko-corriente.rules   y la regla que lo lanza
+/usr/lib/systemd/system-preset/50-nitro-gekko.preset   para que Solus no las
+                                                  desactive (ver mas abajo)
 /var/lib/nitro-gekko/estado                       lo ultimo que aplicaste
 /usr/share/polkit-1/actions/…policy               politica de autorizacion
 /usr/lib/nitro-gekko/gekkonitro/                  la aplicacion
 /usr/bin/nitro-gekko                              lanzador
 /usr/share/applications/…desktop                  entrada de menu
 /usr/share/icons/hicolor/…                        iconos
-~/.local/share/gnome-shell/extensions/<uuid>/     extension
+~/.local/share/gnome-shell/extensions/<uuid>/     extension (no con --sin-extension)
+```
+
+Con el driver del RGB en Solus, ademas (en Arch, lo equivalente lo pone DKMS):
+
+```
+/usr/src/linuwu-sense-<version>/                   el fuente
+/usr/lib/modules/<kernel>/updates/linuwu_sense.ko  el modulo, uno por kernel
+/usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus     compila y cambia de driver
+/etc/systemd/system/nitro-gekko-rgb-solus.service  y lo lanza en cada arranque
+/etc/modprobe.d/nitro-gekko-rgb.conf               lista negra + red de seguridad
+/etc/modules-load.d/linuwu-sense.conf              carga en el arranque
 ```
 
 ### Como se piden los permisos (esto importa)
@@ -630,6 +745,13 @@ que es lo que hace `install.sh`.)
 ## Desinstalacion
 
 ```bash
+sudo ./instalar.sh --desinstalar   # las tres de abajo, en este orden
+```
+
+O una a una, en orden inverso al de instalacion. Valen igual en Arch y en
+Solus; en Solus, `instalar-rgb.sh --revertir` deshace la variante sin DKMS:
+
+```bash
 sudo ./packaging/install.sh --uninstall   # la aplicacion
 sudo ./packaging/instalar-rgb.sh --revertir   # el driver del RGB
 sudo ./packaging/preparar-sistema.sh --revertir   # lo que toco del sistema
@@ -638,6 +760,17 @@ sudo ./packaging/preparar-sistema.sh --revertir   # lo que toco del sistema
 Si habias instalado con `--con-udev`, la desinstalacion borra tambien la regla
 y el `tmpfiles.d` **y devuelve las seis rutas de `/sys` a `0644 root:root`** en
 el momento, sin esperar a un reinicio.
+
+`preparar-sistema.sh --revertir` devuelve **en el momento** el PL1 que tenia
+el firmware antes de instalar (lo anota la propia `rapl-pl1.service` al
+crearla), asi que se puede desinstalar y volver a instalar sin reiniciar entre
+medias. Antes no: el PL1 se quedaba en la potencia base hasta reiniciar, la
+reinstalacion lo veia ya bajo, decia «tu firmware no lo infla» y no creaba la
+unidad; en el arranque siguiente el firmware volvia a 100 W y nadie lo bajaba
+(comprobado en Solus el 2026-09-25).
+
+Las dependencias (python, gtk4, dkms o gcc, los headers...) no se quitan:
+puede que otras cosas las usen.
 
 ---
 
@@ -949,6 +1082,20 @@ de carga) es probable que tu firmware ya los recuerde por su cuenta; volver a
 escribirlos no cuesta nada y asegura que el estado sea el que tu dejaste, no el
 que el EC crea recordar.
 
+**En Solus, esas unidades dependen de un preset.** Tras cada operacion de
+`eopkg`, `usysconf` ejecuta `systemctl preset` sobre las unidades de
+`/usr/lib/systemd/system`, y el `99-default.preset` de Solus dice `disable *`.
+Sin nada mas, la primera actualizacion desactivaba en silencio
+`nitro-gekko-restaurar.service` y `nitro-gekko-perfil.path` (comprobado el
+2026-09-25: activadas a las 22:50, desactivadas tras un `eopkg install` a las
+22:53). Por eso `install.sh` deja `50-nitro-gekko.preset`, que las declara
+activadas; en Arch no cambia nada, porque pacman no aplica presets. Si alguna
+vez las ves desactivadas:
+
+```bash
+sudo systemctl preset nitro-gekko-restaurar.service nitro-gekko-perfil.path
+```
+
 ## Teclado RGB de 4 zonas
 
 El AN17-51 lleva teclado **RGB de 4 zonas** (ficha oficial de Acer:
@@ -957,8 +1104,10 @@ porque **`acer-wmi` de mainline no tiene una sola linea de codigo RGB**: el
 naranja es el estado por defecto que deja el EC cuando nada le manda otra cosa.
 
 Nitro Gekko lo resuelve con **[Linuwu-Sense](https://github.com/0x7375646F/Linuwu-Sense)
-parcheado**, instalado por DKMS para que sobreviva a las actualizaciones de
-kernel:
+parcheado**, instalado de forma que sobreviva a las actualizaciones de kernel:
+por DKMS en Arch y, en Solus, que no tiene DKMS, con un servicio propio que lo
+recompila (ver [En Solus, sin DKMS](#en-solus-sin-dkms)). La orden es la misma
+en las dos:
 
 ```bash
 sudo ./packaging/instalar-rgb.sh
@@ -987,6 +1136,9 @@ El parche son dos cosas, y solo dos:
 > --revertir` deshace el cambio y devuelve `acer_wmi`.
 
 ### El riesgo real de este paso, dicho claro
+
+**Esto va por Arch.** En Solus el mismo riesgo esta cubierto por una red de
+seguridad: ver [En Solus, sin DKMS](#en-solus-sin-dkms).
 
 Poner `acer_wmi` en la lista negra significa que **los perfiles termicos y los
 tacometros pasan a depender de que el modulo DKMS compile**. DKMS lo recompila
@@ -1045,6 +1197,68 @@ sudo ./packaging/probar-rgb.sh            # lo hace, y restaura al terminar
 > copia `rgb/` a una ruta limpia:
 > `cp -a rgb /tmp/rgb && make -C /tmp/rgb` y luego
 > `sudo KO=/tmp/rgb/src/linuwu_sense.ko ./packaging/probar-rgb.sh`.
+
+### En Solus, sin DKMS
+
+Solus no empaqueta DKMS (`eopkg search dkms` no devuelve nada) y `eopkg` no
+admite hooks de terceros: sus disparadores, los de `usysconf`, vienen
+compilados dentro del programa. Nada de lo de arriba existe alli, y
+`instalar-rgb.sh`, al ver Solus en `/etc/os-release`, le pasa el control a
+`packaging/solus/instalar-rgb-solus.sh`, que hace el mismo trabajo por otro
+camino:
+
+1. **Compila con `make`** contra `/usr/lib/modules/<kernel>/build` y deja el
+   modulo en `/usr/lib/modules/<kernel>/updates/`. Medido en este equipo:
+   2,6 s.
+2. **`nitro-gekko-rgb-solus.service` lo recompila al arrancar** con un kernel
+   nuevo y cambia `acer_wmi` por `linuwu_sense` en caliente. En un arranque
+   normal sale al instante. `eopkg upgrade` actualiza los headers junto con el
+   kernel: llevan la misma version y release (7.2.7-361 los dos).
+3. **Red de seguridad.** La lista negra de `acer_wmi` va con una linea
+   `install` en `/etc/modprobe.d/nitro-gekko-rgb.conf`:
+
+   ```
+   install linuwu_sense /usr/sbin/modprobe --ignore-install linuwu_sense $CMDLINE_OPTS || /usr/sbin/modprobe acer_wmi
+   ```
+
+   Si `linuwu_sense` no carga (no compilado para ese kernel, o falla), carga
+   `acer_wmi`, que con el `predator_v4=1` del paso 1 da perfiles y RPM. Por eso
+   en Solus el paso 2 **exige** el 1, y por eso alli `preparar-sistema.sh` deja
+   `/etc/modprobe.d/acer-wmi.conf` aunque mande `linuwu_sense` (en Arch es
+   inerte y no lo toca), y su `--revertir` no lo borra mientras siga el RGB.
+4. **La red se prueba al instalar, no se supone.** El instalador aparta el
+   `.ko`, carga `linuwu_sense` por la ruta normal y comprueba que entra
+   `acer_wmi` con `predator_v4=Y` y los cinco perfiles; despues devuelve el
+   `.ko` y comprueba que el servicio de arranque vuelve a poner
+   `linuwu_sense`. Si algo de eso falla, lo deshace todo. Resultado el
+   2026-09-25: las dos cosas, bien.
+
+Lo que ve quien actualiza el kernel: el primer arranque con el kernel nuevo
+empieza con `acer_wmi` (perfiles y RPM si, RGB no) y, unos segundos despues, el
+servicio compila y cambia de driver. No hace falta reiniciar otra vez. Si la
+compilacion falla porque el kernel nuevo ha roto algo, te quedas con
+`acer_wmi` —sin RGB, pero con perfiles— y el journal dice donde esta el log.
+
+```bash
+/usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus estado   # driver y kernels compilados
+journalctl -b -u nitro-gekko-rgb-solus                  # que hizo en este arranque
+sudo ./packaging/instalar-rgb.sh --revertir             # volver a acer_wmi
+```
+
+Tres cosas de Solus que el instalador ya tiene en cuenta, y que conviene saber
+antes de tocarlo:
+
+- **`/etc` casi vacio.** Solus es *stateless*: `/etc/modules-load.d` no existe
+  hasta que alguien lo crea, y un `echo linuwu_sense > ...` a secas fallo con
+  «No existe el fichero o el directorio» (el 2026-09-25). Siempre se crea el
+  directorio antes de escribir.
+- **`power-profiles-daemon` se queda con `placeholder`** si `platform_profile`
+  aparece despues de que arranque: medido, con los perfiles ya creados en
+  caliente seguia sin verlos hasta reiniciarlo. El instalador lo reinicia al
+  final; en los arranques siguientes el servicio va antes que el.
+- **El initramfs.** Si `acer_wmi` viajara dentro, se cargaria antes de leer la
+  lista negra. En Solus 4.9 no va (el instalador lo mira con `cpio`), y aunque
+  fuera, el servicio de arranque haria el cambio.
 
 ### Lo que puedes hacer
 
@@ -1532,7 +1746,9 @@ la aplicacion pasan por un unico metodo: `_escribir()`, en
 ## La extension de GNOME Shell
 
 Un toggle en **Configuracion rapida** para cambiar el perfil termico sin abrir
-la aplicacion. Es el 90 % del uso diario.
+la aplicacion. Es el 90 % del uso diario, y es **opcional**: `install.sh
+--sin-extension` (o `instalar.sh --sin-extension`) instala la aplicacion sin
+ella, y la aplicacion funciona exactamente igual.
 
 - **UUID:** `nitro-gekko@thegekko.dev`
 - **Destino:** GNOME Shell **50** (`shell-version: ["50"]`)
@@ -1714,9 +1930,11 @@ para descubrirlos.
 ### Lo primero: el alcance
 
 Esto se escribio, se midio y se probo en **un** portatil: Acer Nitro AN17-51
-(Spacia_RTH, BIOS V1.11), Arch Linux, kernel `linux-zen`, GNOME 50.4 sobre
-Wayland. Todo lo demas es hipotesis, y en este repositorio las hipotesis van
-declaradas como tales.
+(Spacia_RTH, BIOS V1.11), primero con Arch Linux, kernel `linux-zen` y GNOME
+50.4 sobre Wayland, y desde el 2026-09-25 tambien con Solus 4.9, kernel
+`linux-current` 7.2.7 y GNOME 50.5. **Se mantienen esas dos distribuciones y
+ninguna mas.** Todo lo demas es hipotesis, y en este repositorio las
+hipotesis van declaradas como tales.
 
 Hay tres cosas que son **medidas de este equipo, no lecturas del tuyo**, y que
 por lo tanto pueden mentir en cualquier otra maquina:
@@ -1745,10 +1963,14 @@ src/gekkonitro/     la aplicacion GTK4/libadwaita
   ajustes.py        cuatro claves en ~/.config/nitro-gekko/ajustes.json
   __main__.py       Adw.Application, ventana unica
 extension/          extension de GNOME Shell 50. Funciona sin la aplicacion
-packaging/          helper privilegiado, politica polkit, reglas udev y los
-                    cuatro instaladores
+packaging/          helper privilegiado, politica polkit, reglas udev, preset
+                    de systemd y los cuatro instaladores
+  solus/            el driver del RGB sin DKMS: lo que usa instalar-rgb.sh en
+                    Solus
 rgb/                copia MODIFICADA de Linuwu-Sense + DKMS. Codigo ajeno
 data/               icono, .desktop
+instalar.sh         instalacion facil: dependencias de Arch o de Solus y los
+                    tres scripts de packaging/ en orden
 nitro-gekko         lanzador de desarrollo: ejecuta el repositorio sin instalar
 ```
 
@@ -1902,6 +2124,35 @@ parrafo de «por que» dentro del codigo.
     `extension/extension.js`. Lo mismo vale para las reglas de que modos se
     ofrecen con cargador y con bateria (`perfiles_permitidos()` y
     `perfilesPermitidos()`).
+24. **Dos distribuciones, Arch y Solus, y las dos a la vez.** Todo cambio en
+    `packaging/` o en `instalar.sh` tiene que valer en las dos, y la orden que
+    se le sugiere al usuario (pacman o eopkg) sale de mirar `/etc/os-release`,
+    nunca se da por hecha. Los scripts aceptan `OS_RELEASE=/ruta/falsa` para
+    ver lo que dirian en la otra sin tenerla delante.
+25. **En Solus no se quita la linea `install` de `nitro-gekko-rgb.conf`, ni el
+    `predator_v4=1` de `acer-wmi.conf` mientras siga el RGB.** Son las dos
+    mitades de la red de seguridad: sin ellas, el primer arranque tras
+    actualizar el kernel es sin perfiles, sin RPM y sin RGB, porque alli no hay
+    DKMS que recompile antes de reiniciar. Y `instalar-rgb-solus.sh` no se da
+    por bueno sin haber PROBADO esa red (su paso 6).
+26. **Toda unidad de `/usr/lib/systemd/system` con `[Install]` va en
+    `packaging/50-nitro-gekko.preset`.** Si no, `usysconf` la desactiva en la
+    siguiente operacion de `eopkg`, sin avisar (medido el 2026-09-25). Las de
+    `/etc/systemd/system` no las toca.
+27. **Antes de escribir en `/etc`, `install -d` del directorio.** Solus es
+    stateless y en una instalacion limpia faltan directorios que en Arch
+    siempre estan (`/etc/modules-load.d`, por ejemplo). Un `echo >` a secas
+    fallo asi en Solus.
+28. **El nombre y la version del modulo solo se escriben en `rgb/dkms.conf` y en
+    `instalar-rgb.sh`.** La variante de Solus los lee de `rgb/dkms.conf`, y el
+    script de arranque busca el fuente por prefijo, justo para no anadir un
+    tercer sitio que se desincronice.
+29. **Un modulo se descarga ANTES de borrar su `.ko` y de hacer `depmod`.**
+    Despues, `modprobe -r` ya no lo encuentra en el indice y no descarga nada;
+    con el error a `/dev/null`, la reversion de Solus decia «acer_wmi al mando»
+    con `linuwu_sense` todavia en `/proc/modules` (comprobado el 2026-09-25).
+    Se descarga primero, con `rmmod` de respaldo, y se comprueba **que driver
+    hay**, no solo que haya perfiles: `linuwu_sense` tambien los da.
 
 ### El presupuesto de tiempo
 
@@ -1932,7 +2183,8 @@ contra codigo viejo:
 | `src/gekkonitro/` | `/usr/lib/nitro-gekko/gekkonitro/` | `sudo ./packaging/install.sh`, o pruebalo antes con `./nitro-gekko` |
 | `extension/` | `~/.local/share/gnome-shell/extensions/nitro-gekko@thegekko.dev/` | copiar y **cerrar sesion** (en Wayland `Alt+F2 r` no vale) |
 | `packaging/nitro-gekko-helper` | `/usr/lib/nitro-gekko/nitro-gekko-helper` | `sudo ./packaging/install.sh` |
-| `rgb/src/linuwu_sense.c` | el modulo DKMS de `/usr/src` | `sudo ./packaging/instalar-rgb.sh` |
+| `rgb/src/linuwu_sense.c` | el modulo DKMS de `/usr/src` (Arch), o el `.ko` de `/usr/lib/modules/<kernel>/updates/` (Solus) | `sudo ./packaging/instalar-rgb.sh` |
+| `packaging/solus/nitro-gekko-rgb-solus` | `/usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus` | `sudo ./packaging/instalar-rgb.sh` |
 
 **`install.sh` copia `src/` y `extension/` con `cp -a` y solo limpia
 `__pycache__`.** Todo lo demas que haya en esas carpetas se instala como codigo
@@ -1945,8 +2197,10 @@ son cuatro comprobaciones baratas, y son las que se pasan antes de dar nada por
 bueno:
 
 ```bash
-bash -n packaging/install.sh packaging/preparar-sistema.sh \
-        packaging/instalar-rgb.sh packaging/probar-rgb.sh   # sintaxis, sin ejecutar
+bash -n instalar.sh packaging/install.sh packaging/preparar-sistema.sh \
+        packaging/instalar-rgb.sh packaging/probar-rgb.sh \
+        packaging/solus/instalar-rgb-solus.sh \
+        packaging/solus/nitro-gekko-rgb-solus             # sintaxis, sin ejecutar
 python3 -m py_compile src/gekkonitro/*.py packaging/nitro-gekko-helper
 udevadm verify packaging/99-nitro-gekko.rules               # lo mismo que hace install.sh
 xmllint --noout --valid packaging/org.thegekko.nitrogekko.policy
@@ -1958,7 +2212,7 @@ codigo de retorno y un `.policy` invalido degrada la autenticacion en silencio.
 
 ### Como probar sin quedarte sin ventiladores
 
-Por orden de seguridad. Los cuatro primeros no tocan nada:
+Por orden de seguridad. Ninguno de estos toca nada:
 
 ```bash
 ./nitro-gekko                                    # la app desde el repositorio
@@ -1966,6 +2220,7 @@ DESTDIR=/tmp/prueba ./packaging/install.sh       # arbol falso: ni root, ni /sys
 find /tmp/prueba -type f | sort                  #   ni udev, ni caches
 ./packaging/preparar-sistema.sh --revisar        # diagnostico del hardware
 ./packaging/probar-rgb.sh --dry-run              # los 8 pasos, sin darlos
+./instalar.sh --revisar                          # el plan de la instalacion facil
 ```
 
 Para ensayar lo que diria en **otro** equipo sin tener otro equipo, los scripts
@@ -1974,6 +2229,7 @@ aceptan variables de entorno pensadas justo para eso (solo con `--revisar`):
 ```bash
 DIR_DMI=/ruta/falsa      ./packaging/preparar-sistema.sh --revisar  # otro modelo
 DIR_POWERCAP=/ruta/falsa ./packaging/preparar-sistema.sh --revisar  # sin RAPL de Intel
+OS_RELEASE=/ruta/falsa   ./instalar.sh --revisar                    # la otra distribucion
 ```
 
 Los validadores del helper se prueban **sin privilegio y sin tocar nada**: el
@@ -2029,6 +2285,11 @@ dentro de
 encontrando cuando busca por que se ha quedado sin ventiladores. **No las
 borres de ahi.**
 
+En Solus la red de seguridad deberia impedirlo. Si aun asi pasa,
+`/usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus estado` y
+`journalctl -b -u nitro-gekko-rgb-solus` dicen por que, y
+`sudo ./packaging/instalar-rgb.sh --revertir` vuelve a `acer_wmi`.
+
 ### Donde vive cada version
 
 Son cuatro sitios, y dos de ellos **tienen que coincidir literalmente**:
@@ -2039,6 +2300,7 @@ Son cuatro sitios, y dos de ellos **tienen que coincidir literalmente**:
 | `extension/metadata.json` | `version-name` y `shell-version` |
 | `rgb/dkms.conf` | `PACKAGE_NAME` y `PACKAGE_VERSION` |
 | `packaging/instalar-rgb.sh` | `NOMBRE` y `VERSION`, que **deben** ser los mismos que los de `dkms.conf` |
+| `packaging/solus/instalar-rgb-solus.sh` | nada: lee `PACKAGE_NAME` y `PACKAGE_VERSION` de `rgb/dkms.conf` |
 
 Si no coinciden, DKMS registra el modulo con otro nombre y ni siquiera
 `--revertir` sabe quitarlo.
@@ -2132,6 +2394,7 @@ No es una lista de tareas pendientes. Es una lista de cosas decididas:
 | `--con-udev` por defecto | quita la validacion del helper y abre seis rutas a cualquier proceso del usuario |
 | Un demonio D-Bus con polkit por metodo | anadiria un proceso privilegiado permanente para ganar granularidad que hoy no hace falta |
 | Perfiles o efectos codificados a mano | se leen del kernel y del driver, que es lo que los hace correctos manana |
+| Otras distribuciones | se mantienen Arch y Solus. Cada una trae su gestor de paquetes, su manera de recompilar modulos (DKMS o no) y sus rarezas (los presets de Solus, su `/etc` casi vacio), y cada una exige su tanda de pruebas en el portatil. `instalar.sh` se planta en cualquier otra |
 
 ### Sobre este README y los ficheros que no se publican
 
@@ -2172,8 +2435,9 @@ Antes de abrir nada, dos atajos que resuelven la mayoria de los casos:
 Si aun asi hace falta, las [plantillas de
 incidencia](.github/ISSUE_TEMPLATE) piden de entrada lo que siempre hay que
 preguntar: la salida de `./packaging/preparar-sistema.sh --revisar`, tu cadena
-DMI, el kernel, la version de GNOME y `dkms status`. Con eso se puede empezar;
-sin eso, no.
+DMI, la distribucion, el kernel, la version de GNOME y `dkms status` (en Solus,
+`/usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus estado`). Con eso se puede
+empezar; sin eso, no.
 
 ---
 

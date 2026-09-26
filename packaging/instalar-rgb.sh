@@ -25,6 +25,9 @@
 #   sudo ./packaging/instalar-rgb.sh --revertir   desinstala y devuelve acer_wmi
 #        ./packaging/instalar-rgb.sh --help       esta ayuda (no pide root)
 #
+# En Solus no hay DKMS: este script le pasa el control, con los mismos
+# argumentos, a packaging/solus/instalar-rgb-solus.sh.
+#
 # Para PROBAR el RGB antes de instalar nada de forma permanente:
 #   make -C rgb && sudo ./packaging/probar-rgb.sh
 #
@@ -51,6 +54,20 @@ CONF_LOAD=/etc/modules-load.d/linuwu-sense.conf
 # orden alfabetico y este tiene que ir despues de los de DKMS (70 y 71).
 HOOK=/usr/share/libalpm/hooks/95-nitro-gekko-dkms.hook
 VIGILANTE=/usr/lib/nitro-gekko/nitro-gekko-dkms-check
+
+# ---------------------------------------------------------------------------
+#  Solus: otro camino, la misma orden.
+#
+#  Solus no empaqueta DKMS y eopkg no admite hooks de terceros, asi que nada
+#  de lo de abajo existe alli.  packaging/solus/instalar-rgb-solus.sh hace el
+#  mismo trabajo sin DKMS (y con --revertir, lo mismo que aqui).  Se le pasa el
+#  control ANTES de leer opciones o pedir root para que 'instalar-rgb.sh' sea
+#  la unica orden que hay que recordar en las dos distribuciones.  OS_RELEASE
+#  solo sirve para probar el desvio sin estar en Solus.
+# ---------------------------------------------------------------------------
+if grep -qE '^(ID|ID_LIKE)=.*\bsolus\b' "${OS_RELEASE:-/etc/os-release}" 2>/dev/null; then
+    exec "$PAQ/solus/instalar-rgb-solus.sh" "$@"
+fi
 
 if [[ -t 1 ]]; then V=$'\033[32m'; R=$'\033[31m'; A=$'\033[33m'; C=$'\033[36m'; N=$'\033[1m'; F=$'\033[0m'
 else V=; R=; A=; C=; N=; F=; fi
@@ -167,8 +184,13 @@ if [[ "$ACCION" == "revertir" ]]; then
 
     depmod -a
 
+    # rmmod de respaldo: a estas alturas 'dkms remove' y 'depmod' ya han sacado
+    # el modulo del indice, y 'modprobe -r' no descarga lo que no encuentra en
+    # el.  rmmod descarga por nombre.  Medido en Solus el 2026-09-25 con la
+    # variante sin DKMS (mismo kmod, mismo orden); en Arch no esta probado.
     if grep -q '^linuwu_sense ' /proc/modules; then
-        modprobe -r linuwu_sense 2>/dev/null && ok "linuwu_sense descargado" \
+        { modprobe -r linuwu_sense 2>/dev/null || rmmod linuwu_sense 2>/dev/null; } \
+            && ok "linuwu_sense descargado" \
             || { mal "no se pudo descargar linuwu_sense (reinicia)"; FALLOS=1; }
     fi
     modprobe sparse_keymap 2>/dev/null

@@ -1,0 +1,23 @@
+[Unit]
+Description=Nitro Gekko: compilar y cargar linuwu_sense (teclado RGB) para el kernel en marcha
+Documentation=https://github.com/The-Gekko/Nitro-Gekko
+# Solo Solus: hace lo que DKMS hace en Arch.  En un arranque normal sale al
+# instante; tras una actualizacion del kernel compila (unos 3 s) y cambia
+# acer_wmi por linuwu_sense.  Va antes de nitro-gekko-restaurar para que los
+# ajustes del teclado se repongan sobre el driver que los entiende, y antes de
+# power-profiles-daemon para que este vea platform_profile desde el principio.
+#
+# Vive en /etc/systemd/system y no en /usr/lib: usysconf solo aplica presets
+# a las unidades de /usr/lib/systemd/system, asi que aqui no la desactiva.
+After=systemd-modules-load.service local-fs.target
+Before=nitro-gekko-restaurar.service power-profiles-daemon.service
+# Sin la lista negra no hay nada que hacer (--revertir la quita).
+ConditionPathExists=/etc/modprobe.d/nitro-gekko-rgb.conf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus arrancar
+
+[Install]
+WantedBy=multi-user.target
