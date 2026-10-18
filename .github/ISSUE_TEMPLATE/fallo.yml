@@ -6,7 +6,7 @@ body:
     attributes:
       value: >-
         Este proyecto esta escrito y medido en **un** portatil (Acer Nitro
-        AN17-51, Arch y Solus, GNOME 50). Cuanto mas se parezca tu informe a una medida
+        AN17-51, Arch, Solus y Ubuntu, GNOME 50). Cuanto mas se parezca tu informe a una medida
         y menos a una impresion, mas facil es arreglarlo.
 
   - type: textarea
@@ -31,7 +31,8 @@ body:
         grep PRETTY_NAME /etc/os-release
         uname -r
         gnome-shell --version
-        dkms status                                              # en Arch
+        dkms status                                              # en Arch y Ubuntu
+        mokutil --sb-state                                       # en Ubuntu
         /usr/lib/nitro-gekko-rgb/nitro-gekko-rgb-solus estado    # en Solus
         cat /sys/firmware/acpi/platform_profile_choices
         ls /sys/devices/platform/acer-wmi/

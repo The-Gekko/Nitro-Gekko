@@ -3,7 +3,7 @@
 # Prepara el Acer Nitro AN17-51 para que Nitro Gekko tenga algo que controlar.
 #
 # install.sh instala la APLICACION.  Este script prepara el HARDWARE: sin el,
-# en un Arch recien instalado la mitad de la app aparece en gris porque las
+# en un sistema recien instalado la mitad de la app aparece en gris porque las
 # rutas de /sys ni siquiera existen.
 #
 # Cada paso dice QUE hace, POR QUE, y como deshacerlo.  Nada se aplica en
@@ -27,10 +27,11 @@
 #                  /sys/class/powercap.  Sirve para ver el paso 3 en un equipo
 #                  sin RAPL de Intel (cualquier Nitro con CPU AMD, por ejemplo).
 #   OS_RELEASE     fichero os-release.  Por omision /etc/os-release.  Sirve
-#                  para ver los avisos de Arch desde Solus, o al reves.
+#                  para ver los avisos de una distribucion desde otra.
 #
-# Vale para Arch y para Solus.  Lo unico que cambia entre las dos son las
-# ordenes que se sugieren (pacman o eopkg).
+# Vale para Arch, Solus y Ubuntu.  Lo que cambia entre ellas son las ordenes
+# que se sugieren (pacman, eopkg o apt) y, en Solus y Ubuntu, que el driver del
+# RGB lleva una red de seguridad que usa el predator_v4=1 del paso 1.
 #
 set -uo pipefail
 
@@ -65,17 +66,25 @@ info(){ echo "        $*"; }
 CAMBIOS=0
 PENDIENTE_REINICIO=0
 
-# Arch o Solus, las dos distribuciones que mantiene el proyecto.  Solo decide
-# que orden se sugiere en los avisos (pacman o eopkg).  OS_RELEASE permite ver
-# los avisos de la otra sin tenerla delante (solo con --revisar).
+# Arch, Solus o Ubuntu, las distribuciones que mantiene el proyecto.  Decide
+# que orden se sugiere en los avisos (pacman, eopkg o apt) y si el driver del
+# RGB lleva red de seguridad.  OS_RELEASE permite ver los avisos de otra sin
+# tenerla delante (solo con --revisar).
 DISTRO="$(
     f="${OS_RELEASE:-/etc/os-release}"
     case " $(sed -n 's/^ID=//p; s/^ID_LIKE=//p' "$f" 2>/dev/null | tr -d '"' | tr '\n' ' ') " in
-        *" solus "*) echo solus ;;
-        *" arch "*)  echo arch ;;
-        *)           echo otra ;;
+        *" solus "*)  echo solus ;;
+        *" arch "*)   echo arch ;;
+        *" ubuntu "*) echo ubuntu ;;
+        *)            echo otra ;;
     esac
 )"
+# En Solus y en Ubuntu la lista negra de acer_wmi lleva una linea 'install'
+# que, si linuwu_sense no carga, carga acer_wmi: la red de seguridad (en
+# Solus porque no hay DKMS; en Ubuntu, sobre todo, por Secure Boot).  Y lo que
+# le da los perfiles a ese acer_wmi es el predator_v4=1 del paso 1.
+RED_SEGURIDAD=0
+[[ "$DISTRO" == solus || "$DISTRO" == ubuntu ]] && RED_SEGURIDAD=1
 
 [[ $EUID -eq 0 || "$MODO" == "revisar" ]] || {
     echo "Hace falta root.  Usa:  sudo $0   (o --revisar para solo diagnosticar)"
@@ -174,13 +183,14 @@ elif [[ -d /sys/module/acer_wmi ]]; then
     DRIVER="acer_wmi"
 fi
 
-# EN SOLUS ES DISTINTO: alli el fichero NO es inerte con linuwu_sense al mando.
-# La lista negra de packaging/solus/ lleva una red de seguridad que, si
-# linuwu_sense no carga tras un kernel nuevo, carga acer_wmi, y lo que le da
-# los perfiles es este predator_v4=1.  Antes este paso se lo saltaba al ver
-# linuwu_sense, y tras una desinstalacion a medias el RGB ya no se dejaba
-# reinstalar (comprobado el 2026-09-25).
-if [[ "$DRIVER" == "linuwu_sense" && "$DISTRO" != solus ]]; then
+# EN SOLUS Y EN UBUNTU ES DISTINTO: alli el fichero NO es inerte con
+# linuwu_sense al mando.  Su lista negra lleva una red de seguridad que, si
+# linuwu_sense no carga (kernel nuevo sin compilar, o en Ubuntu la clave de
+# Secure Boot sin enrolar), carga acer_wmi, y lo que le da los perfiles es
+# este predator_v4=1.  Antes este paso se lo saltaba al ver linuwu_sense, y
+# tras una desinstalacion a medias el RGB ya no se dejaba reinstalar
+# (comprobado en Solus el 2026-09-25).
+if [[ "$DRIVER" == "linuwu_sense" ]] && (( ! RED_SEGURIDAD )); then
     ok "driver al mando: linuwu_sense  (lo instala instalar-rgb.sh; incluye el RGB)"
     info "acer_wmi no se toca: linuwu_sense lo sustituye y lo deja en lista negra."
     [[ -f "$CONF_ACER" ]] && \
@@ -188,11 +198,11 @@ if [[ "$DRIVER" == "linuwu_sense" && "$DISTRO" != solus ]]; then
 elif [[ -f "$CONF_ACER" ]] && grep -q "predator_v4=1" "$CONF_ACER"; then
     ok "$CONF_ACER ya lo tiene"
     [[ "$DRIVER" == "linuwu_sense" ]] && \
-        info "linuwu_sense al mando; en Solus este fichero es el de la red de seguridad del RGB."
+        info "linuwu_sense al mando; aqui este fichero es el de la red de seguridad del RGB."
 else
     falta "$CONF_ACER sin predator_v4=1"
     [[ "$DRIVER" == "linuwu_sense" ]] && \
-        info "En Solus hace falta aunque mande linuwu_sense: es lo que usa su red de seguridad."
+        info "Aqui hace falta aunque mande linuwu_sense: es lo que usa la red de seguridad del RGB."
     if [[ "$MODO" == "aplicar" ]]; then
         # OJO: aqui habia un '>' a secas.  /etc/modprobe.d/acer-wmi.conf es un
         # nombre generico que puede existir ya con opciones puestas por la
@@ -214,21 +224,32 @@ else
             printf '%s\n' '# hwmon con las RPM de los ventiladores.'
             printf '%s\n' '#'
             printf '%s\n' '# Si instalas el teclado RGB (packaging/instalar-rgb.sh), linuwu_sense pasa'
-            printf '%s\n' '# a sustituir a acer_wmi y este fichero se queda inerte.  En Solus no: lo'
-            printf '%s\n' '# usa la red de seguridad de packaging/solus/ si linuwu_sense no carga.'
+            printf '%s\n' '# a sustituir a acer_wmi y este fichero se queda inerte.  En Solus y en'
+            printf '%s\n' '# Ubuntu no: lo usa la red de seguridad del RGB si linuwu_sense no carga.'
             printf '%s\n' '# Para quitarlo:  sudo ./packaging/preparar-sistema.sh --revertir'
             printf '%s\n' 'options acer_wmi predator_v4=1'
         } >> "$CONF_ACER"
         ok "escrito $CONF_ACER"
         CAMBIOS=1
+        # En Ubuntu el initramfs lo hace dracut y lleva una copia de
+        # /etc/modprobe.d.  Si acer_wmi viajara dentro, en el arranque se
+        # cargaria con la copia vieja, SIN predator_v4=1, y no habria perfiles
+        # aunque este fichero lo diga.  Se mira y solo se regenera si lo lleva.
+        if [[ "$DISTRO" == ubuntu ]] && command -v lsinitrd >/dev/null \
+           && grep -q 'acer-wmi\.ko' < <(lsinitrd "/boot/initrd.img-$(uname -r)" 2>/dev/null); then
+            info "acer_wmi va dentro del initramfs: regenerandolo para que lleve predator_v4=1..."
+            update-initramfs -u -k "$(uname -r)" >/dev/null 2>&1 && ok "initramfs regenerado" \
+                || mal "no se pudo regenerar:  sudo update-initramfs -u"
+        fi
     fi
 fi
 if [[ "$MODO" == "revertir" ]]; then
     # Solo se borra lo que pusimos NOSOTROS.  Un 'rm -f' incondicional se
     # llevaba por delante las opciones de acer_wmi que hubiera antes.
-    # Y en Solus, no mientras siga el driver del RGB: sin este fichero su red de
-    # seguridad cargaria un acer_wmi sin perfiles (regla 25 del README).
-    if [[ "$DISTRO" == solus && -f /etc/modprobe.d/nitro-gekko-rgb.conf ]]; then
+    # Y en Solus y Ubuntu, no mientras siga el driver del RGB: sin este fichero
+    # su red de seguridad cargaria un acer_wmi sin perfiles (regla 25 del
+    # README).
+    if (( RED_SEGURIDAD )) && [[ -f /etc/modprobe.d/nitro-gekko-rgb.conf ]]; then
         falta "$CONF_ACER se deja: el driver del RGB sigue instalado y lo necesita"
         info "Revierte antes el RGB:  sudo ./packaging/instalar-rgb.sh --revertir"
     elif [[ -f "$COPIA_ACER" ]]; then
@@ -455,11 +476,11 @@ titulo "4. power-profiles-daemon  —  la trampa del perfil pegado"
 # medido, 3237 rpm frente a 1661 en 'quiet', para ganar 1 grado.
 if ! systemctl is-active power-profiles-daemon >/dev/null 2>&1; then
     falta "power-profiles-daemon no esta activo"
-    if [[ "$DISTRO" == solus ]]; then
-        info "Instalalo con:  sudo eopkg install power-profiles-daemon"
-    else
-        info "Instalalo con:  sudo pacman -S power-profiles-daemon"
-    fi
+    case "$DISTRO" in
+        solus)  info "Instalalo con:  sudo eopkg install power-profiles-daemon" ;;
+        ubuntu) info "Instalalo con:  sudo apt install power-profiles-daemon" ;;
+        *)      info "Instalalo con:  sudo pacman -S power-profiles-daemon" ;;
+    esac
 else
     ok "power-profiles-daemon activo"
     DRV="$(powerprofilesctl list 2>/dev/null | grep -m1 PlatformDriver | awk '{print $2}')"

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# Aviso de Nitro Gekko al instalar un kernel en Ubuntu.
+#
+# Lo instala packaging/ubuntu/instalar-rgb-ubuntu.sh en dos sitios, y apt lo
+# llama con la version del kernel como $1:
+#
+#   /etc/kernel/postinst.d/zz-nitro-gekko-rgb          al instalar un kernel
+#   /etc/kernel/header_postinst.d/zz-nitro-gekko-rgb   al instalar sus headers
+#
+# El zz- del nombre no es decorativo: run-parts ejecuta en orden alfabetico, y
+# esto tiene que ir despues de 'dkms', que es el que compila el modulo.  Y el
+# nombre no lleva puntos a proposito: run-parts se salta en silencio los que
+# los llevan.
+#
+# Es el equivalente del 95-nitro-gekko-dkms.hook de Arch, con dos diferencias:
+#
+#  1. SIEMPRE sale con 0.  Un script de /etc/kernel/postinst.d que falla hace
+#     fallar el 'dpkg --configure' del kernel, y apt se queda con el paquete a
+#     medio configurar.  Un aviso no puede costar eso.
+#  2. No dice que te vas a quedar sin ventiladores, porque en Ubuntu no es
+#     verdad: la lista negra lleva la red de seguridad, y un modulo sin
+#     compilar cuesta el RGB, no los perfiles.
+#
+# Se calla si linuwu-sense no esta registrado en DKMS o si no esta la lista
+# negra (por ejemplo, tras un --revertir): ahi no hay nada que perder.
+set -uo pipefail
+
+MODULO="linuwu-sense"
+CONF_BL=/etc/modprobe.d/nitro-gekko-rgb.conf
+KVER="${1:-}"
+
+[[ -n "$KVER" ]] || exit 0
+command -v dkms >/dev/null 2>&1 || exit 0
+[[ -f "$CONF_BL" ]] || exit 0
+# Sustitucion de proceso y no tuberia: con pipefail, 'dkms status | grep -q'
+# devuelve 141 cuando grep acierta pronto (regla 20 del README).
+grep -q . < <(dkms status "$MODULO" 2>/dev/null) || exit 0
+grep -q ': *installed' < <(dkms status "$MODULO" -k "$KVER" 2>/dev/null) && exit 0
+
+if [[ ! -d "/usr/lib/modules/$KVER/build/include" ]]; then
+    # apt configura a veces la imagen del kernel antes que sus headers.  Si el
+    # paquete de headers ya esta en camino, quien tiene que hablar es la
+    # llamada desde header_postinst.d, cuando DKMS ya haya podido compilar.
+    if grep -q '^install ok ' < <(dpkg-query -W -f='${Status}' "linux-headers-$KVER" 2>/dev/null); then
+        exit 0
+    fi
+    MOTIVO="faltan los headers:  sudo apt install linux-headers-$KVER"
+else
+    MOTIVO="DKMS no lo ha compilado.  El detalle:  dkms status $MODULO"
+fi
+
+# A stderr: es lo que apt deja a la vista.
+exec >&2
+echo
+echo "==================================================================="
+echo "  NITRO GEKKO: sin teclado RGB con el kernel $KVER"
+echo "==================================================================="
+echo "  $MOTIVO"
+echo
+echo "  No te quedas sin ventiladores: la red de seguridad de"
+echo "  $CONF_BL carga acer_wmi, con perfiles"
+echo "  termicos y RPM.  Lo que no habra con ese kernel es el RGB."
+echo
+echo "  Para recuperarlo, arranca con $KVER y, con el repositorio delante:"
+echo
+echo "    sudo ./packaging/instalar-rgb.sh"
+echo "==================================================================="
+echo
+exit 0

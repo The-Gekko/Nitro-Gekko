@@ -24,9 +24,10 @@
 #  de ficheros. Es la forma de revisar que va a instalar antes de dejarle
 #  tocar el equipo de verdad.
 #
-#  Vale igual para Arch y para Solus, que son las dos distribuciones que
-#  mantiene el proyecto: lo unico que cambia entre ellas son las ordenes que
-#  se sugieren en los avisos (pacman o eopkg).
+#  Vale igual para Arch, Solus y Ubuntu, que son las distribuciones que
+#  mantiene el proyecto.  Lo que cambia entre ellas son las ordenes que se
+#  sugieren en los avisos (pacman, eopkg o apt) y, en Ubuntu, el grupo de
+#  administradores: alli no existe 'wheel', es 'sudo'.
 # ============================================================================
 
 set -euo pipefail
@@ -106,21 +107,31 @@ CON_UDEV=0
 SIN_EXTENSION=0
 
 # ---------------------------------------------------------------------------
-#  Distribucion: Arch o Solus
+#  Distribucion: Arch, Solus o Ubuntu
 #
-#  Solo cambia las ordenes que se sugieren en los avisos.  Se lee ID e ID_LIKE
-#  de os-release; OS_RELEASE permite probar los avisos de la otra distribucion
-#  sin tenerla delante.
+#  Cambia las ordenes que se sugieren en los avisos y el grupo de
+#  administradores.  Se lee ID e ID_LIKE de os-release; OS_RELEASE permite
+#  probar los avisos de otra distribucion sin tenerla delante.
 # ---------------------------------------------------------------------------
 distro() {
     local id="" id_like=""
     id="$(sed -n 's/^ID=//p' "${OS_RELEASE:-/etc/os-release}" 2>/dev/null | tr -d '"')"
     id_like="$(sed -n 's/^ID_LIKE=//p' "${OS_RELEASE:-/etc/os-release}" 2>/dev/null | tr -d '"')"
     case " $id $id_like " in
-        *" solus "*) echo solus ;;
-        *" arch "*)  echo arch ;;
-        *)           echo otra ;;
+        *" solus "*)  echo solus ;;
+        *" arch "*)   echo arch ;;
+        *" ubuntu "*) echo ubuntu ;;
+        *)            echo otra ;;
     esac
+}
+
+# El grupo de administradores.  En Arch y Solus es 'wheel'.  En Ubuntu no
+# existe: alli es 'sudo', y es a quien polkit considera administrador
+# (/usr/share/polkit-1/rules.d/49-ubuntu-admin.rules: unix-group:sudo y
+# unix-group:admin).  Decide dos cosas: a quien se le pregunta en el dialogo
+# de polkit, y, con --con-udev, a que grupo se le abre /sys.
+grupo_admin() {
+    if [[ "$(distro)" == ubuntu ]]; then echo sudo; else echo wheel; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -334,32 +345,36 @@ comprobar_modulo() {
 }
 
 comprobar_grupo_wheel() {
-    titulo "3. Grupo wheel"
-    # 'wheel' importa en los DOS modos, pero por motivos distintos:
-    #   polkit    -> en Arch la regla por defecto (50-default.rules) considera
-    #                administradores a los miembros de wheel, asi que son los
-    #                que pueden responder al dialogo de auth_admin_keep.
+    local grupo
+    grupo="$(grupo_admin)"
+    titulo "3. Grupo $grupo"
+    # El grupo de administradores ('wheel', o 'sudo' en Ubuntu) importa en los
+    # DOS modos, pero por motivos distintos:
+    #   polkit    -> la regla por defecto (50-default.rules en Arch,
+    #                49-ubuntu-admin.rules en Ubuntu) considera administradores
+    #                a sus miembros, asi que son los que pueden responder al
+    #                dialogo de auth_admin_keep.
     #   --con-udev -> es el grupo al que se le abre la escritura en /sys.
-    if getent group wheel >/dev/null; then
-        ok "El grupo wheel existe (gid $(getent group wheel | cut -d: -f3))."
-        if id -nG "$USUARIO" | tr ' ' '\n' | grep -qx wheel; then
-            ok "El usuario '$USUARIO' pertenece a wheel."
+    if getent group "$grupo" >/dev/null; then
+        ok "El grupo $grupo existe (gid $(getent group "$grupo" | cut -d: -f3))."
+        if id -nG "$USUARIO" | tr ' ' '\n' | grep -qx "$grupo"; then
+            ok "El usuario '$USUARIO' pertenece a $grupo."
         elif (( CON_UDEV )); then
-            aviso_contado "El usuario '$USUARIO' NO esta en el grupo wheel."
-            aviso_contado "Con --con-udev es wheel quien recibe la escritura en /sys, asi"
+            aviso_contado "El usuario '$USUARIO' NO esta en el grupo $grupo."
+            aviso_contado "Con --con-udev es $grupo quien recibe la escritura en /sys, asi"
             aviso_contado "que la aplicacion no podra cambiar nada. Anadelo con:"
-            aviso_contado "    sudo usermod -aG wheel $USUARIO"
+            aviso_contado "    sudo usermod -aG $grupo $USUARIO"
             aviso_contado "y vuelve a iniciar sesion."
         else
-            aviso_contado "El usuario '$USUARIO' NO esta en el grupo wheel."
+            aviso_contado "El usuario '$USUARIO' NO esta en el grupo $grupo."
             aviso_contado "En modo polkit la aplicacion funciona igual, pero el dialogo"
             aviso_contado "pedira la contrasena de un administrador y no la tuya."
         fi
     elif (( CON_UDEV )); then
-        aviso_contado "No existe el grupo 'wheel' en este sistema."
+        aviso_contado "No existe el grupo '$grupo' en este sistema."
         aviso_contado "Las reglas udev y el tmpfiles.d se instalaran pero no serviran de nada."
     else
-        aviso_contado "No existe el grupo 'wheel' en este sistema: comprueba a quien"
+        aviso_contado "No existe el grupo '$grupo' en este sistema: comprueba a quien"
         aviso_contado "considera administrador tu polkit antes de dar esto por bueno."
     fi
 }
@@ -673,9 +688,23 @@ instalar() {
             udevadm verify "$RAIZ/packaging/$FICHERO_UDEV" 2>&1 | sed 's/^/      /' >&2 || true
         fi
     fi
-    if (( CON_UDEV )); then
+    if (( CON_UDEV )) && [[ "$(grupo_admin)" == wheel ]]; then
         poner 644 "$RAIZ/packaging/$FICHERO_UDEV"     "$DIR_UDEV/$FICHERO_UDEV"     || true
         poner 644 "$RAIZ/packaging/$FICHERO_TMPFILES" "$DIR_TMPFILES/$FICHERO_TMPFILES" || true
+    elif (( CON_UDEV )); then
+        # En Ubuntu no hay 'wheel': un 'chgrp wheel' en la regla fallaria en
+        # cada evento y la ruta se quedaria de root.  Se instala la misma regla
+        # con el grupo cambiado, solo en las lineas que no son comentario (los
+        # comentarios explican el razonamiento y se quedan como estan).
+        local tmp_grupo f
+        tmp_grupo="$(mktemp -d)"
+        for f in "$FICHERO_UDEV" "$FICHERO_TMPFILES"; do
+            sed "/^[[:space:]]*#/!s/\bwheel\b/$(grupo_admin)/g" "$RAIZ/packaging/$f" > "$tmp_grupo/$f"
+        done
+        poner 644 "$tmp_grupo/$FICHERO_UDEV"     "$DIR_UDEV/$FICHERO_UDEV"     || true
+        poner 644 "$tmp_grupo/$FICHERO_TMPFILES" "$DIR_TMPFILES/$FICHERO_TMPFILES" || true
+        rm -rf "$tmp_grupo"
+        info "Reglas con el grupo '$(grupo_admin)' en lugar de 'wheel'."
     fi
 
     # -- codigo de la aplicacion ---------------------------------------------
@@ -841,11 +870,11 @@ refrescar_caches() {
         fi
     else
         aviso_contado "falta gtk-update-icon-cache: el icono puede no aparecer."
-        if [[ "$(distro)" == solus ]]; then
-            aviso_contado "    sudo eopkg install libgtk-3"
-        else
-            aviso_contado "    sudo pacman -S gtk-update-icon-cache"
-        fi
+        case "$(distro)" in
+            solus)  aviso_contado "    sudo eopkg install libgtk-3" ;;
+            ubuntu) aviso_contado "    sudo apt install gtk-update-icon-cache" ;;
+            *)      aviso_contado "    sudo pacman -S gtk-update-icon-cache" ;;
+        esac
     fi
 
     if command -v update-desktop-database >/dev/null; then
@@ -1184,8 +1213,9 @@ $APP_NOMBRE - instalador de la aplicacion
         cambio pasa por el helper, que pide la contrasena una vez por sesion.
 
     sudo $0 --con-udev
-        Instala y ademas abre seis rutas de /sys al grupo 'wheel'.  Sin
-        dialogo de contrasena, pero cualquier proceso tuyo puede escribir ahi.
+        Instala y ademas abre seis rutas de /sys al grupo 'wheel' ('sudo' en
+        Ubuntu).  Sin dialogo de contrasena, pero cualquier proceso tuyo puede
+        escribir ahi.
 
     sudo $0 --sin-extension
         Instala sin la extension de GNOME Shell.  Se puede combinar con
@@ -1241,9 +1271,10 @@ $APP_NOMBRE - instalador de la aplicacion
     0644  ${DIR_UDEV}/${FICHERO_UDEV}
     0644  ${DIR_TMPFILES}/${FICHERO_TMPFILES}
 
-  Esos dos ultimos son los que dan escritura al grupo 'wheel' sobre seis rutas
-  de /sys, y por eso NO se instalan por defecto: sin ellos cualquier cambio
-  pasa por el helper y por el dialogo de contrasena de GNOME.  Lee la seccion
+  Esos dos ultimos son los que dan escritura al grupo 'wheel' (en Ubuntu,
+  'sudo') sobre seis rutas de /sys, y por eso NO se instalan por defecto: sin
+  ellos cualquier cambio pasa por el helper y por el dialogo de contrasena de
+  GNOME.  Lee la seccion
   'Seguridad y permisos' del README antes de usar --con-udev: explica
   exactamente que se abre y que puede hacer con ello un proceso que corra
   como tu usuario.

@@ -26,7 +26,9 @@
 #        ./packaging/instalar-rgb.sh --help       esta ayuda (no pide root)
 #
 # En Solus no hay DKMS: este script le pasa el control, con los mismos
-# argumentos, a packaging/solus/instalar-rgb-solus.sh.
+# argumentos, a packaging/solus/instalar-rgb-solus.sh.  En Ubuntu si hay
+# DKMS, pero tambien Secure Boot y otros hooks de kernel: se lo pasa a
+# packaging/ubuntu/instalar-rgb-ubuntu.sh.
 #
 # Para PROBAR el RGB antes de instalar nada de forma permanente:
 #   make -C rgb && sudo ./packaging/probar-rgb.sh
@@ -67,6 +69,18 @@ VIGILANTE=/usr/lib/nitro-gekko/nitro-gekko-dkms-check
 # ---------------------------------------------------------------------------
 if grep -qE '^(ID|ID_LIKE)=.*\bsolus\b' "${OS_RELEASE:-/etc/os-release}" 2>/dev/null; then
     exec "$PAQ/solus/instalar-rgb-solus.sh" "$@"
+fi
+
+# ---------------------------------------------------------------------------
+#  Ubuntu: DKMS si, pero con Secure Boot y sin pacman.
+#
+#  El hook de pacman de abajo no existe alli, el aviso de kernel va en
+#  /etc/kernel/postinst.d, y con Secure Boot el modulo no carga hasta enrolar
+#  la clave MOK de DKMS.  packaging/ubuntu/instalar-rgb-ubuntu.sh hace lo de
+#  aqui mas eso, y lleva la red de seguridad de Solus en la lista negra.
+# ---------------------------------------------------------------------------
+if grep -qE '^(ID|ID_LIKE)=.*\bubuntu\b' "${OS_RELEASE:-/etc/os-release}" 2>/dev/null; then
+    exec "$PAQ/ubuntu/instalar-rgb-ubuntu.sh" "$@"
 fi
 
 if [[ -t 1 ]]; then V=$'\033[32m'; R=$'\033[31m'; A=$'\033[33m'; C=$'\033[36m'; N=$'\033[1m'; F=$'\033[0m'

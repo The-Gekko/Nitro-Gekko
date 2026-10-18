@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 #
-# Instalacion facil de Nitro Gekko, en Arch o en Solus.
+# Instalacion facil de Nitro Gekko, en Arch, en Solus o en Ubuntu.
 #
 # Hace, en este orden y parando si algo sale mal, lo mismo que los pasos
 # manuales del README:
 #
-#   1. instala las dependencias con pacman o con eopkg;
+#   1. instala las dependencias con pacman, eopkg o apt;
 #   2. sudo ./packaging/preparar-sistema.sh   el hardware (predator_v4, PL1,
 #                                             atajo del boton de la marca);
 #   3. sudo ./packaging/instalar-rgb.sh       el driver del teclado RGB
 #                                             (DKMS en Arch; en Solus, sin
-#                                             DKMS y con red de seguridad);
+#                                             DKMS y con red de seguridad; en
+#                                             Ubuntu, DKMS con red de
+#                                             seguridad y Secure Boot);
 #   4. sudo ./packaging/install.sh            la aplicacion.
 #
 # No hace nada que no hagan ya esos scripts: los llama, con sus avisos y sus
@@ -27,14 +29,16 @@
 #                                         terminal, por ejemplo con pkexec)
 #        ./instalar.sh --help             esta ayuda
 #
-# Solo Arch y Solus: son las dos distribuciones que mantiene el proyecto.  En
-# cualquier otra se planta y remite a los pasos manuales del README.
+# Solo Arch, Solus y Ubuntu: son las distribuciones que mantiene el proyecto.
+# En cualquier otra se planta y remite a los pasos manuales del README.
 #
 # Variables para PROBARLO sin tener la otra distribucion delante (solo con
 # --revisar):
 #   OS_RELEASE   fichero os-release.  Por omision /etc/os-release.
 #
-# Codigos de salida: 0 bien, 1 abortado o fallido, 2 opcion desconocida.
+# Codigos de salida: 0 bien, 1 abortado o fallido, 2 opcion desconocida.  En
+# Ubuntu con Secure Boot puede terminar bien pero con un reinicio pendiente
+# para enrolar la clave del driver del RGB: lo dice el resumen.
 #
 set -uo pipefail
 
@@ -79,9 +83,10 @@ done
 # ---------------------------------------------------------------------------
 OSR="${OS_RELEASE:-/etc/os-release}"
 case " $(sed -n 's/^ID=//p; s/^ID_LIKE=//p' "$OSR" 2>/dev/null | tr -d '"' | tr '\n' ' ') " in
-    *" solus "*) DISTRO=solus ;;
-    *" arch "*)  DISTRO=arch ;;
-    *)           DISTRO=otra ;;
+    *" solus "*)  DISTRO=solus ;;
+    *" arch "*)   DISTRO=arch ;;
+    *" ubuntu "*) DISTRO=ubuntu ;;
+    *)            DISTRO=otra ;;
 esac
 NOMBRE_DISTRO="$(sed -n 's/^PRETTY_NAME=//p' "$OSR" 2>/dev/null | tr -d '"')"
 KVER="$(uname -r)"
@@ -89,12 +94,23 @@ KVER="$(uname -r)"
 # Paquetes de cada distribucion.  Los nombres estan sacados de la propia
 # distribucion, no de memoria: en Solus con 'eopkg search-file' sobre cada
 # fichero que usa la aplicacion (2026-09-25); en Arch, los 'depends' del
-# PKGBUILD de packaging/aur/.
+# PKGBUILD de packaging/aur/; en Ubuntu 26.04, con 'dpkg -S' sobre los mismos
+# ficheros (2026-10-17).
 #
 #   Arch    python python-gobject gtk4 libadwaita polkit power-profiles-daemon
 #           libxml2 (xmllint, con el que install.sh valida la politica polkit)
 #   Solus   python3 python-gobject libgtk-4 libadwaita polkit
 #           power-profiles-daemon libxml2
+#   Ubuntu  python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1
+#           polkitd pkexec power-profiles-daemon libxml2-utils
+#           gtk-update-icon-cache.  Los gir1.2-* son los que dejan importar
+#           Gtk 4 y Adw desde Python, y desde polkit 121 pkexec va en un
+#           paquete aparte.  python3-gi-cairo NO es opcional: sin el, cada
+#           dibujo con cairo (las graficas de RPM, las muestras de color)
+#           falla con «Couldn't find foreign struct converter for
+#           'cairo.Context'» y la ventana sale vacia.  En Arch y Solus va
+#           dentro de python-gobject; en Ubuntu, aparte (visto el 2026-10-17
+#           en la primera instalacion real).
 #
 # Para el RGB:
 #   Arch    dkms y los headers del kernel CON EL QUE ARRANCAS: se pregunta a
@@ -103,6 +119,11 @@ KVER="$(uname -r)"
 #   Solus   gcc make binutils, cpio y zstd (para mirar el initramfs) y
 #           linux-current-headers o linux-lts-headers segun el kernel.  En
 #           una instalacion recien hecha de Solus 4.9 no hay ninguno.
+#   Ubuntu  dkms, mokutil (Secure Boot), linux-headers-<kernel en marcha> y
+#           el linux-headers-<sabor> que acompana al linux-image-<sabor>
+#           instalado (generic-hwe-26.04, por ejemplo): sin el, los kernels
+#           que lleguen con las actualizaciones vendran sin headers y DKMS no
+#           podra compilar nada para ellos.
 paquetes() {
     local pkg_kernel
     case "$DISTRO" in
@@ -124,7 +145,27 @@ paquetes() {
                     *)     echo linux-current-headers ;;
                 esac
             fi ;;
+        ubuntu)
+            echo python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
+                 polkitd pkexec power-profiles-daemon libxml2-utils gtk-update-icon-cache
+            if (( CON_RGB )); then
+                echo dkms mokutil "linux-headers-$KVER"
+                headers_del_sabor
+            fi ;;
     esac
+}
+
+# Ubuntu: el linux-headers-<sabor> de cada linux-image-<sabor> instalado.  Los
+# linux-image con version en el nombre (linux-image-7.0.0-38-generic) son un
+# kernel concreto, no un sabor, y se descartan; lo mismo los -unsigned.
+headers_del_sabor() {
+    command -v dpkg-query >/dev/null || return 0
+    local p
+    while read -r p; do
+        apt-cache show "linux-headers-${p#linux-image-}" >/dev/null 2>&1 \
+            && echo "linux-headers-${p#linux-image-}"
+    done < <(dpkg-query -W -f='${Package} ${Status}\n' 'linux-image-*' 2>/dev/null \
+             | awk '$NF == "installed" && $1 !~ /[0-9]+\.[0-9]+\.[0-9]+-/ && $1 !~ /^linux-image-(unsigned|uc)-/ {print $1}')
 }
 
 # Los que faltan, para decirlo antes de instalar.  Sin el gestor de paquetes
@@ -139,6 +180,11 @@ faltan() {
             command -v eopkg >/dev/null || { echo "?"; return; }
             instalados="$(eopkg list-installed 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk '{print $1}')"
             for p in $(paquetes); do grep -qx "$p" <<<"$instalados" || echo "$p"; done ;;
+        ubuntu)
+            command -v dpkg-query >/dev/null || { echo "?"; return; }
+            for p in $(paquetes); do
+                grep -q '^install ok installed' < <(dpkg-query -W -f='${Status}' "$p" 2>/dev/null) || echo "$p"
+            done ;;
     esac
 }
 
@@ -178,6 +224,23 @@ instalar_paquetes() {
                 info "Actualiza el sistema y vuelve a probar:  sudo eopkg upgrade"
                 return 1
             } ;;
+        ubuntu)
+            # En apt, al reves que en Arch, refrescar las listas sin actualizar
+            # el sistema es lo normal y no deja nada a medias.  Sin ello, unas
+            # listas viejas piden versiones que el espejo ya ha borrado (404).
+            apt-get update || avi "apt-get update ha fallado; se intenta con las listas que hay"
+            # Sin terminal (con --si desde pkexec) debconf no tiene donde
+            # preguntar: se le dice que no lo intente.
+            if (( SIN_PREGUNTAR )) && [[ ! -t 0 ]]; then
+                export DEBIAN_FRONTEND=noninteractive
+            fi
+            # shellcheck disable=SC2086
+            apt-get install $( (( SIN_PREGUNTAR )) && echo -y ) $lista || {
+                mal "apt ha fallado"
+                info "Actualiza el sistema y vuelve a probar:"
+                info "    sudo apt update && sudo apt full-upgrade"
+                return 1
+            } ;;
     esac
 }
 
@@ -206,13 +269,22 @@ plan() {
     info "   boton de la marca -> Nitro Gekko  (packaging/preparar-sistema.sh)"
     if (( CON_RGB )); then
         info "3. Driver del teclado RGB: linuwu_sense, y acer_wmi a la LISTA NEGRA"
-        if [[ "$DISTRO" == solus ]]; then
-            info "   Solus: sin DKMS; se recompila al arrancar con un kernel nuevo y, si"
-            info "   no puede, entra acer_wmi con perfiles (red de seguridad)"
-        else
-            info "   Arch: por DKMS.  Si un kernel nuevo no lo compila, arrancas sin"
-            info "   perfiles ni RPM hasta arreglarlo (README, «El riesgo real de este paso»)"
-        fi
+        case "$DISTRO" in
+            solus)
+                info "   Solus: sin DKMS; se recompila al arrancar con un kernel nuevo y, si"
+                info "   no puede, entra acer_wmi con perfiles (red de seguridad)" ;;
+            ubuntu)
+                info "   Ubuntu: por DKMS, y si linuwu_sense no carga entra acer_wmi con"
+                info "   perfiles (red de seguridad)"
+                if grep -q 'SecureBoot enabled' < <(mokutil --sb-state 2>/dev/null); then
+                    info "   Secure Boot ACTIVADO: hay que enrolar la clave con la que DKMS"
+                    info "   firma el modulo.  Te pedira una contrasena de un solo uso y un"
+                    info "   reinicio; hasta entonces, perfiles y RPM si, RGB no"
+                fi ;;
+            *)
+                info "   Arch: por DKMS.  Si un kernel nuevo no lo compila, arrancas sin"
+                info "   perfiles ni RPM hasta arreglarlo (README, «El riesgo real de este paso»)" ;;
+        esac
     else
         info "3. Driver del teclado RGB: NO (--sin-rgb).  No se toca ningun modulo."
     fi
@@ -227,7 +299,7 @@ plan() {
 #  Principal
 # ---------------------------------------------------------------------------
 if [[ "$DISTRO" == otra ]]; then
-    mal "${NOMBRE_DISTRO:-esta distribucion} no esta soportada: solo Arch y Solus."
+    mal "${NOMBRE_DISTRO:-esta distribucion} no esta soportada: solo Arch, Solus y Ubuntu."
     info "Los pasos manuales del README te dicen que hace falta; los scripts de"
     info "packaging/ no dependen de la distribucion salvo por los avisos."
     exit 1
@@ -254,7 +326,10 @@ if [[ "$ACCION" == "desinstalar" ]]; then
     FALLO=0
     "$PAQ/install.sh" --uninstall || FALLO=1
     # El driver solo se revierte si esta puesto: revertirlo recarga modulos.
-    if [[ -e /etc/modprobe.d/nitro-gekko-rgb.conf ]] || grep -q '^linuwu_sense ' /proc/modules; then
+    # El fuente en /usr/src cuenta: es lo que queda de una instalacion que se
+    # quedo a medias, y DKMS lo seguiria compilando en cada kernel.
+    if [[ -e /etc/modprobe.d/nitro-gekko-rgb.conf ]] || grep -q '^linuwu_sense ' /proc/modules \
+       || compgen -G '/usr/src/linuwu-sense-*' >/dev/null; then
         "$PAQ/instalar-rgb.sh" --revertir || FALLO=1
     else
         info "el driver del RGB no estaba instalado"
@@ -285,14 +360,19 @@ titulo "2. Hardware  (packaging/preparar-sistema.sh)"
 "$PAQ/preparar-sistema.sh" || { mal "preparar-sistema.sh ha fallado: se para aqui"; exit 1; }
 
 RGB_OK=1
+RGB_REINICIO=0
 if (( CON_RGB )); then
     titulo "3. Driver del teclado RGB  (packaging/instalar-rgb.sh)"
     # Si falla no se para: el script se deshace solo y deja acer_wmi con los
-    # perfiles, y la aplicacion funciona sin RGB.
-    if ! "$PAQ/instalar-rgb.sh"; then
-        RGB_OK=0
-        avi "el driver del RGB no se ha instalado; se sigue con la aplicacion sin RGB"
-    fi
+    # perfiles, y la aplicacion funciona sin RGB.  El 3 no es un fallo: en
+    # Ubuntu con Secure Boot, instalado y a falta de enrolar la clave.
+    "$PAQ/instalar-rgb.sh"
+    case $? in
+        0) ;;
+        3) RGB_REINICIO=1 ;;
+        *) RGB_OK=0
+           avi "el driver del RGB no se ha instalado; se sigue con la aplicacion sin RGB" ;;
+    esac
 fi
 
 titulo "4. Aplicacion  (packaging/install.sh)"
@@ -304,6 +384,11 @@ titulo "Resumen"
 ok "Nitro Gekko instalado.  Abrelo desde el menu, con 'nitro-gekko' o con el"
 info "boton del logo de la marca."
 (( CON_RGB && ! RGB_OK )) && avi "sin teclado RGB: mira los mensajes del paso 3"
+if (( RGB_REINICIO )); then
+    avi "el teclado RGB llega al REINICIAR y enrolar la clave en la pantalla azul"
+    info "de MOK Manager: Enroll MOK -> Continue -> Yes -> contrasena -> Reboot."
+    info "Despues, para comprobarlo:  sudo ./packaging/instalar-rgb.sh"
+fi
 if (( CON_EXTENSION )); then
     info "Para la extension:  gnome-extensions enable nitro-gekko@thegekko.dev"
     info "y cierra y abre sesion (en Wayland no vale Alt+F2 r)."
