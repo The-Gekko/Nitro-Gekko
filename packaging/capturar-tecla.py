@@ -27,9 +27,16 @@ de tecla una vez, usa el sudo puntual.
     python3 packaging/capturar-tecla.py --help # esta ayuda
 
 En este portatil (Acer Nitro AN17-51) el boton con el logo de la marca -el que
-en Windows abre NitroSense- emite KEY_PRESENTATION, que en GNOME se llama
-XF86Presentation.  Ese atajo lo asigna solo packaging/preparar-sistema.sh; este
-script sirve para averiguarlo en un modelo distinto.
+en Windows abre NitroSense- emite KEY_PRESENTATION, que para el escritorio es
+XF86Presentation.  En GNOME ese atajo lo asigna packaging/preparar-sistema.sh, y
+en Hyprland es una linea de su configuracion (README, «En Hyprland»); este
+script sirve para averiguar la tecla en un modelo distinto.
+
+Tambien destapa las teclas con el nombre equivocado.  La del microfono de este
+equipo llegaba como KEY_F15, que no atiende nadie, y no dejaba ni rastro en
+journalctl.  Si una tecla especial sale como F13-F24, el script mira como llama
+systemd a ese scancode en otros equipos de la misma marca y da la entrada de
+hwdb para corregirlo.
 """
 
 from __future__ import annotations
@@ -37,9 +44,12 @@ from __future__ import annotations
 import os
 import re
 import select
+import shutil
 import struct
+import subprocess
 import sys
 import time
+from collections import Counter
 
 # struct input_event de 64 bits:
 #   struct timeval time  -> 2 x long  (16 bytes)
@@ -60,20 +70,30 @@ MSC_SCAN = 0x04
 #   KEY_CONTROLPANEL    decia 0x24B    y son 0x243 (579)
 #   KEY_NEWS            decia 426      y son 0x1ab (427)
 # Con eso el script bautizaba mal la tecla y, peor, daba un nombre de atajo
-# equivocado para meter en GNOME.  Ahora los dos nombres salen de los ficheros
-# del propio sistema, que son la fuente de verdad:
+# equivocado para meter en GNOME.  Ahora los dos nombres salen del propio
+# sistema, que es la fuente de verdad:
 #
 #   /usr/include/linux/input-event-codes.h  ->  KEY_*      (linux-api-headers,
 #                                                dependencia de glibc)
-#   /usr/share/X11/xkb/symbols/inet         ->  XF86*      (xkeyboard-config)
+#   xkbcli compile-keymap                   ->  el nombre que ve el escritorio
+#                                                (libxkbcommon)
 #
-# En el segundo, el codigo XKB es el de evdev + 8 y se escribe en hexadecimal
-# como <I1A9>.  Comprobado:
+# El segundo era symbols/inet a pelo, y se quedaba corto: solo sabia leer los
+# codigos escritos como <I433>, no los que tienen nombre (<FK08>, <FK15>), y el
+# 2026-10-28 dijo que F8 y F15 "no tienen nombre XKB".  F8 es F8, y F15 es
+# XF86Launch6.  xkbcli compila el mapa entero, como el escritorio; si no esta
+# (en Ubuntu viene en libxkbcommon-tools, que no se instala solo), se lee
+# symbols/inet resolviendo los nombres con keycodes/evdev.
+#
+# El codigo XKB es el de evdev + 8, en decimal.  Comprobado:
 #   evdev 425 -> <I433> -> XF86Presentation   (el boton del logo del AN17-51)
+#   evdev 185 -> <FK15> -> XF86Launch6        (su tecla del microfono, sin hwdb)
 # --------------------------------------------------------------------------
 
 CABECERA_EVDEV = "/usr/include/linux/input-event-codes.h"
 SIMBOLOS_XKB = "/usr/share/X11/xkb/symbols/inet"
+KEYCODES_XKB = "/usr/share/X11/xkb/keycodes/evdev"
+SIN_NOMBRE = "sin nombre XKB"
 
 #: Ultimo recurso si faltan esos ficheros. Solo lo verificado en este equipo.
 NOMBRES_MINIMOS = {425: ("KEY_PRESENTATION", "XF86Presentation")}
@@ -111,7 +131,12 @@ def _nombres_x11() -> dict[int, str]:
     """
     tabla: dict[int, str] = {}
     inicio = re.compile(r'^\s*xkb_symbols\s+"([^"]+)"')
-    clave = re.compile(r"^\s*key\s+<I(\d+)>\s*\{\s*\[\s*(\S+)\s*\]")
+    clave = re.compile(r"^\s*key\s+<([^>]+)>\s*\{\s*\[\s*([^\],\s]+)")
+    try:
+        with open(KEYCODES_XKB, encoding="utf-8") as fh:
+            codigos = _codigos_xkb(fh.read())
+    except OSError:
+        codigos = {}
     dentro = False
     try:
         with open(SIMBOLOS_XKB, encoding="utf-8") as fh:
@@ -123,27 +148,177 @@ def _nombres_x11() -> dict[int, str]:
                 if not dentro:
                     continue
                 m = clave.match(linea)
-                if m:
-                    # El keycode de XKB es el de evdev mas 8.
-                    tabla[int(m.group(1), 10) - 8] = m.group(2)
+                if not m:
+                    continue
+                nombre = m.group(1)
+                if nombre in codigos:
+                    xkb = codigos[nombre]
+                elif re.fullmatch(r"I\d+", nombre):
+                    xkb = int(nombre[1:], 10)
+                else:
+                    continue
+                # El keycode de XKB es el de evdev mas 8.
+                tabla[xkb - 8] = m.group(2)
     except OSError:
         pass
     return tabla
 
 
+def _codigos_xkb(texto: str) -> dict[str, int]:
+    """Nombre de tecla XKB -> codigo XKB, con los alias resueltos.
+
+    Vale para keycodes/evdev y para la seccion xkb_keycodes de un mapa
+    compilado, que tienen la misma forma:  <FK15> = 193;  alias <I193> = <FK15>;
+    """
+    codigos = {
+        n: int(c) for n, c in re.findall(r"^\s*<([^>]+)>\s*=\s*(\d+)\s*;", texto, re.M)
+    }
+    for alias, real in re.findall(r"^\s*alias\s+<([^>]+)>\s*=\s*<([^>]+)>\s*;", texto, re.M):
+        if real in codigos:
+            codigos.setdefault(alias, codigos[real])
+    return codigos
+
+
+def _nombres_xkbcli() -> dict[int, str]:
+    """codigo evdev -> nombre, del mapa que compila libxkbcommon.
+
+    Es el mismo que usa el escritorio (GNOME y Hyprland tiran de
+    libxkbcommon).  La distribucion del teclado no importa aqui: las teclas
+    especiales se llaman igual en todas.
+    """
+    xkbcli = shutil.which("xkbcli")
+    if not xkbcli:
+        return {}
+    try:
+        # stdin a /dev/null: sin el, xkbcli intenta leer un mapa de la entrada
+        # que herede.  Desde un pipe salia un mapa vacio, y desde la terminal
+        # de 'sudo' se quedaba esperando a que se teclease uno.
+        mapa = subprocess.run(
+            [xkbcli, "compile-keymap", "--rules", "evdev"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=10, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    codigos = _codigos_xkb(mapa)
+    tabla: dict[int, str] = {}
+    for nombre, cuerpo in re.findall(r"\bkey\s+<([^>]+)>\s*\{(.*?)\};", mapa, re.S):
+        # Dos formas:  { [ XF86Launch6 ] }  y, con tipo,
+        #              { type= "CTRL+ALT", symbols[1]= [ F8, F8, ... ] }
+        m = re.search(r"symbols\[[^\]]*\]\s*=\s*\[\s*([^\],\s]+)", cuerpo) or re.match(
+            r"\s*\[\s*([^\],\s]+)", cuerpo
+        )
+        if m and nombre in codigos and m.group(1) != "NoSymbol":
+            tabla[codigos[nombre] - 8] = m.group(1)
+    return tabla
+
+
 def construir_nombres() -> dict[int, tuple[str, str]]:
     evdev = _nombres_evdev()
-    x11 = _nombres_x11()
+    x11 = _nombres_xkbcli() or _nombres_x11()
     if not evdev and not x11:
         return dict(NOMBRES_MINIMOS)
     codigos = set(evdev) | set(x11)
     return {
-        c: (evdev.get(c, f"codigo {c}"), x11.get(c, "sin nombre X11"))
+        c: (evdev.get(c, f"codigo {c}"), x11.get(c, SIN_NOMBRE))
         for c in codigos
     }
 
 
 NOMBRES = construir_nombres()
+
+
+# --------------------------------------------------------------------------
+# Teclas con el nombre equivocado
+#
+# A un scancode que no esta en la tabla de systemd, el kernel le pone el nombre
+# que le toca por defecto, y en las teclas especiales de los portatiles suele
+# caer en F13-F24.  Asi llegaba la tecla del microfono del AN17-51: scancode
+# 0x66, KEY_F15, que el escritorio llama XF86Launch6 y no atiende nadie.  Y sin
+# rastro: el kernel solo avisa ("Unknown key pressed") de los scancodes que no
+# tienen NINGUN nombre, y este tenia uno.  El arreglo salio de mirar como
+# llama systemd a ese mismo scancode en otros Acer (micmute, en cinco
+# modelos), que es lo que hace aqui pista_nombre_equivocado().
+# --------------------------------------------------------------------------
+
+#: KEY_F13 (183) a KEY_F24 (194).
+F13_A_F24 = range(183, 195)
+TECLADO_INTERNO = "AT Translated Set 2 keyboard"
+TABLA_SYSTEMD = (
+    "/usr/lib/udev/hwdb.d/60-keyboard.hwdb",
+    "/lib/udev/hwdb.d/60-keyboard.hwdb",
+)
+DIR_DMI = "/sys/class/dmi/id"
+
+
+def _leer(ruta: str) -> str:
+    try:
+        with open(ruta, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def nombres_en_systemd(fabricante: str, scan: int) -> Counter[str]:
+    """Como llama la tabla de systemd a este scancode en equipos del fabricante.
+
+    La tabla son registros: una o mas lineas 'evdev:...' seguidas de lineas
+    ' KEYBOARD_KEY_xx=nombre'.  Cuenta un nombre por registro cuyo match lleve
+    ':svn<fabricante>'.
+    """
+    clave = f" KEYBOARD_KEY_{scan:x}="
+    patron = f":svn{fabricante.lower()}"
+    cuenta: Counter[str] = Counter()
+    for ruta in TABLA_SYSTEMD:
+        try:
+            with open(ruta, encoding="utf-8") as fh:
+                lineas = fh.read().splitlines()
+        except OSError:
+            continue
+        del_fabricante = False
+        venia_de_match = False
+        for linea in lineas:
+            if linea.startswith("evdev:"):
+                if not venia_de_match:
+                    del_fabricante = False
+                del_fabricante = del_fabricante or patron in linea.lower()
+                venia_de_match = True
+                continue
+            venia_de_match = False
+            if del_fabricante and linea.startswith(clave):
+                # '!' es "pisar aunque ya tenga nombre"; para el nombre no cuenta.
+                nombre = linea[len(clave):].split("#")[0].strip().lstrip("!")
+                if nombre:
+                    cuenta[nombre] += 1
+        break
+    return cuenta
+
+
+def pista_nombre_equivocado(ruta: str, codigo: int, scan: int) -> None:
+    fabricante = _leer(f"{DIR_DMI}/sys_vendor")
+    m = re.search(r":svn([^:]*):pn([^:]*):", _leer(f"{DIR_DMI}/modalias"))
+    tecla = NOMBRES.get(codigo, (f"codigo {codigo}", ""))[0]
+    print(f"     OJO: una tecla especial que llega como {tecla} suele tener el")
+    print("     nombre equivocado: el kernel le pone el que toca por defecto a")
+    print(f"     su scancode (0x{scan:02x}), y para el escritorio no significa nada.")
+    sugeridos = nombres_en_systemd(fabricante, scan) if fabricante else Counter()
+    if sugeridos:
+        lista = ", ".join(f"{n} ({veces})" for n, veces in sugeridos.most_common(3))
+        print(f"     En otros equipos de {fabricante}, systemd llama a ese scancode:")
+        print(f"        {lista}")
+    if not m:
+        return
+    nombre = sugeridos.most_common(1)[0][0] if sugeridos else "<nombre>"
+    # El fichero y las dos ordenes son las que da la cabecera de
+    # 60-keyboard.hwdb para las entradas locales.
+    print("     Para darle nombre, en /etc/udev/hwdb.d/61-keyboard-local.hwdb:")
+    print(f"        evdev:atkbd:dmi:bvn*:bvr*:bd*:svn{m.group(1)}*:pn{m.group(2)}:*")
+    print(f"         KEYBOARD_KEY_{scan:x}={nombre}")
+    print(f"     y despues:  sudo systemd-hwdb update && sudo udevadm trigger {ruta}")
+    if not sugeridos:
+        print("     El nombre es el KEY_* de input-event-codes.h en minusculas y sin")
+        print("     'KEY_': micmute, prog1, kbdillumdown...")
+    print("     Si funciona, vale la pena proponerlo para la tabla de systemd.")
 
 
 def dispositivos_acer() -> list[tuple[str, str]]:
@@ -250,7 +425,8 @@ def main() -> None:
         raise SystemExit(1)
 
     vistos: set[tuple[str, int]] = set()
-    ultimo_scan: int | None = None
+    # Por dispositivo: el MSC_SCAN de uno no es el scancode de la tecla de otro.
+    ultimo_scan: dict[int, int] = {}
     fin = time.monotonic() + segundos
 
     try:
@@ -267,26 +443,27 @@ def main() -> None:
                         FORMATO, datos[i : i + TAM]
                     )
                     if tipo == EV_MSC and codigo == MSC_SCAN:
-                        ultimo_scan = valor
+                        ultimo_scan[fd] = valor
                     elif tipo == EV_KEY and valor == 1:  # 1 = pulsacion
                         clave = (nombre, codigo)
                         if clave in vistos:
                             continue
                         vistos.add(clave)
                         ev_nombre, x11 = NOMBRES.get(
-                            codigo, (f"codigo {codigo}", "sin nombre X11")
+                            codigo, (f"codigo {codigo}", SIN_NOMBRE)
                         )
+                        scan = ultimo_scan.get(fd)
                         print(f"  ┌─ {nombre}")
                         print(f"  │  codigo evdev : {codigo}  ({ev_nombre})")
-                        if ultimo_scan is not None:
-                            print(f"  │  scancode     : 0x{ultimo_scan:02x}")
-                        print(f"  │  nombre X11   : {x11}")
-                        if x11.startswith("XF86") or x11 == "Print":
-                            print(f"  └─ para el atajo de GNOME usa:  {x11}")
+                        if scan is not None:
+                            print(f"  │  scancode     : 0x{scan:02x}")
+                        print(f"  │  nombre XKB   : {x11}")
+                        if x11 != SIN_NOMBRE:
+                            print(f"  └─ para un atajo (GNOME o Hyprland):  {x11}")
                         else:
-                            print("  └─ esta tecla no tiene nombre XKB: capturala")
-                            print("     en Configuracion > Teclado > Atajos")
-                            print("     personalizados, pulsandola en el dialogo.")
+                            print("  └─ sin nombre XKB: ningun atajo del escritorio la vera")
+                        if nombre == TECLADO_INTERNO and codigo in F13_A_F24 and scan is not None:
+                            pista_nombre_equivocado(ruta, codigo, scan)
                         print()
     finally:
         for fd in ficheros:

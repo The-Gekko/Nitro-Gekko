@@ -1487,7 +1487,10 @@ PHN16-72), pero el AN17-51 no esta, y el kernel le pone el nombre por defecto
 de ese scancode: `KEY_F15`. Para el escritorio eso es `XF86Launch6`, que no
 atiende nadie. Y **no deja rastro** en `journalctl`: no es una tecla
 desconocida, es una tecla con el nombre equivocado. Se ve con
-`sudo python3 packaging/capturar-tecla.py`.
+`sudo python3 packaging/capturar-tecla.py`, que ademas, cuando una tecla
+especial le llega como F13–F24, busca como llama systemd a ese scancode en
+otros equipos de tu marca y te da la entrada de hwdb lista para pegar. Con la
+del microfono dice `micmute (5)`, que es como se encontro aqui.
 
 El paso 7 de `preparar-sistema.sh` escribe
 `/etc/udev/hwdb.d/61-nitro-gekko-teclado.hwdb`, con la misma entrada que trae
@@ -1531,9 +1534,10 @@ sudo python3 packaging/capturar-tecla.py
 Lleva `sudo` a proposito: `/dev/input/event*` es `0640 root:input` y en Arch un
 usuario normal **no** esta en el grupo `input`. El script te lo explica si lo
 lanzas sin permisos. Cuando te diga el nombre de la tecla (`XF86Algo`), ponlo
-en *Configuracion > Teclado > Atajos personalizados* con el comando
-`nitro-gekko`, o cambia `XF86Presentation` por el tuyo en
-`packaging/preparar-sistema.sh`.
+con el comando `nitro-gekko`: en GNOME, en *Configuracion > Teclado > Atajos
+personalizados* (o cambia `XF86Presentation` por el tuyo en
+`packaging/preparar-sistema.sh`); en Hyprland, en la linea de `bind` de [En
+Hyprland](#en-hyprland).
 
 ---
 
