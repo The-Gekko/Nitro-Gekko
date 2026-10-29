@@ -730,21 +730,22 @@ titulo "7. Tecla del microfono (F8)  —  silenciarlo"
 # La entrada va atada al modelo (pnNitroAN17-51): en otro Acer el mismo
 # scancode puede ser otra tecla, y alli no se instala.
 #
-# DONDE SE COMPILA importa mas que el fichero.  'systemd-hwdb update' a secas
-# escribe /etc/udev/hwdb.bin, y udev usa el PRIMER hwdb.bin que encuentra,
-# empezando por /etc.  Arch compila con --usr desde su hook de pacman: un
-# /etc/udev/hwdb.bin creado aqui taparia para siempre, sin avisar, todas las
-# actualizaciones de la tabla de systemd que vinieran despues.  Asi que se
-# compila donde ya este el de la distribucion.  Con --usr se siguen leyendo
-# las fuentes de /etc/udev/hwdb.d (comprobado con --root en un arbol falso).
+# Se compila con 'systemd-hwdb update' a secas, que es lo que manda la propia
+# cabecera de 60-keyboard.hwdb para las entradas locales.  Eso deja la base en
+# /etc/udev/hwdb.bin, y udev usa la de /etc antes que la de /usr/lib/udev.  No
+# tapa las actualizaciones de systemd: con ficheros en /etc/udev/hwdb.d, el
+# servicio systemd-hwdb-update la rehace en cada arranque que siga a una
+# actualizacion de paquetes (ConditionNeedsUpdate=/etc; en Arch lo arma el hook
+# de pacman).
+#
+# La primera version de este paso compilaba con --usr, creyendo lo contrario:
+# que un hwdb.bin en /etc se quedaria viejo para siempre.  En el siguiente
+# arranque systemd creo el de /etc el solo (2026-10-28, 18:38: "Finished
+# Rebuild Hardware Database"), que es su diseno.
 HWDB=/etc/udev/hwdb.d/61-nitro-gekko-teclado.hwdb
 
 compilar_hwdb() {
-    if [[ -f /etc/udev/hwdb.bin ]]; then
-        systemd-hwdb update
-    else
-        systemd-hwdb update --usr
-    fi
+    systemd-hwdb update
 }
 
 # El nodo del teclado interno cambia de numero entre arranques: se busca por

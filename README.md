@@ -1509,12 +1509,14 @@ Predator PH315-52 la tabla de systemd lo llama `kbdillumdown` (Fn+F9, bajar la
 luz del teclado). En este equipo no se ha comprobado que tecla es, y no se
 toca.
 
-Un detalle que no se ve y rompe cosas: **donde se compila**. `systemd-hwdb
-update` a secas crea `/etc/udev/hwdb.bin`, y udev usa el primer `hwdb.bin` que
-encuentra empezando por `/etc`. Arch compila en `/usr/lib/udev` (`--usr`, desde
-su hook de pacman), asi que ese fichero en `/etc` taparia para siempre las
-actualizaciones de la tabla de systemd. El script compila donde ya este el de
-tu distribucion.
+Se compila con `systemd-hwdb update` a secas, como dice la propia cabecera de
+`60-keyboard.hwdb` para las entradas locales. Eso deja la base en
+`/etc/udev/hwdb.bin`, que udev lee antes que la de `/usr/lib/udev`, y **no tapa
+las actualizaciones de systemd**: con ficheros en `/etc/udev/hwdb.d`, el
+servicio `systemd-hwdb-update` la rehace en cada arranque que siga a una
+actualizacion de paquetes. La primera version de este paso compilaba con
+`--usr` creyendo lo contrario, y en el siguiente arranque systemd creo el
+fichero de `/etc` por su cuenta (2026-10-28), que es su diseno.
 
 `--revertir` borra el fichero, pero la tecla sigue funcionando **hasta
 reiniciar**: udev asigna teclas y no las desasigna.
