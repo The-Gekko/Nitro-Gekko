@@ -161,7 +161,8 @@ sitio comodo lo que en este portatil solo se puede tocar escribiendo a mano en
 La extension anade el cambio de modo y las RPM a **Configuracion rapida**, para
 no tener que abrir la aplicacion, y ensena el modo nuevo en pantalla cuando
 cambia desde fuera (por ejemplo, con la tecla de modo). Es **opcional**: con
-`--sin-extension` se instala solo la aplicacion, que no la necesita para nada.
+`--sin-extension` se instala solo la aplicacion, que no la necesita para nada,
+y donde no hay GNOME Shell no se copia.
 Fuera de GNOME no hay extension: en Hyprland, el aviso del modo nuevo lo da
 `nitro-gekko --avisos` con una notificacion. Ver [En Hyprland](#en-hyprland).
 
@@ -2178,7 +2179,13 @@ exec-once = nitro-gekko --avisos
 
 `preparar-sistema.sh` **no edita** la configuracion de Hyprland —es tuya, y
 cada cual la tiene partida a su manera—, pero `--revisar` mira las dos cosas
-(pasos 5 y 6) y te da la linea que falte.
+(pasos 5 y 6) y te da la linea que falte. `install.sh`, por su parte, ya no
+copia la extension donde no hay GNOME Shell.
+
+**Hace falta un agente de polkit en la sesion.** Es lo que pide la contrasena
+cuando la aplicacion cambia algo del hardware; en GNOME viene de serie y en
+Hyprland lo arranca tu configuracion (Caelestia arranca `polkit-gnome`). Sin
+ninguno, la aplicacion no puede pedirla y los cambios fallan.
 
 **`nitro-gekko --avisos`** vigila `platform_profile` igual que la extension y,
 cuando el modo cambia —con la tecla de modo, desde la aplicacion, al enchufar

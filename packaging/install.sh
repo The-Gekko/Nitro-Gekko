@@ -678,7 +678,11 @@ instalar() {
     # habria ni un mensaje que lo dijera.
     if (( ! CON_UDEV )); then
         info "Modo polkit (por defecto): no se abren permisos de /sys."
-        info "La aplicacion pedira la contrasena por el dialogo de GNOME."
+        # Antes decia "por el dialogo de GNOME".  En Hyprland lo pide el agente
+        # de polkit que arranque la sesion (con Caelestia, polkit-gnome), y sin
+        # ninguno la aplicacion no puede pedir la contrasena.
+        info "La aplicacion pedira la contrasena por el agente de polkit de tu sesion"
+        info "(en GNOME, su dialogo; en Hyprland, el que arranque tu configuracion)."
         info "Para el modo sin contrasena: $0 --con-udev  (lee antes el README)."
     elif command -v udevadm >/dev/null && [[ -f "$RAIZ/packaging/$FICHERO_UDEV" ]]; then
         if udevadm verify "$RAIZ/packaging/$FICHERO_UDEV" >/dev/null 2>&1; then
@@ -822,6 +826,21 @@ LANZADOR
     if (( SIN_EXTENSION )); then
         info "Omitida a peticion (--sin-extension). La aplicacion no la necesita."
         info "Para ponerla mas adelante: sudo $0"
+    elif [[ -z "$DESTDIR" ]] && ! command -v gnome-shell >/dev/null; then
+        # Sin GNOME Shell (Hyprland, por ejemplo) la extension no hace nada.
+        # Antes se copiaba igual y despues se decia "Para activarla:
+        # gnome-extensions enable ...", una orden que aqui ni existe
+        # (comprobado en Hyprland el 2026-10-28).  Con DESTDIR se copia
+        # siempre: es como se construye un paquete, y el chroot de construccion
+        # no tiene por que llevar el GNOME del equipo donde se vaya a instalar.
+        info "No hay GNOME Shell: la extension no se copia (aqui no haria nada)."
+        info "La aplicacion funciona igual.  En Hyprland, el aviso de cambio de modo"
+        info "lo da 'nitro-gekko --avisos': seccion «En Hyprland» del README."
+        uuid="$(uuid_extension || true)"
+        if [[ -n "$uuid" && -d "${DIR_EXTENSIONES}/${uuid}" ]]; then
+            info "Queda la copia de una instalacion anterior, que no estorba:"
+            info "   ${DIR_EXTENSIONES}/${uuid}"
+        fi
     elif uuid="$(uuid_extension)" && [[ -n "$uuid" ]]; then
         info "UUID leido de extension/metadata.json: $uuid"
         if poner_arbol "$RAIZ/extension" "${DIR_EXTENSIONES}/${uuid}"; then
@@ -831,8 +850,10 @@ LANZADOR
                 ok "Propietario ajustado a $USUARIO."
             fi
             comprobar_version_gnome "$uuid"
-            info "Para activarla:  gnome-extensions enable $uuid"
-            info "En Wayland hace falta cerrar y abrir sesion (no vale Alt+F2 r)."
+            if command -v gnome-shell >/dev/null; then
+                info "Para activarla:  gnome-extensions enable $uuid"
+                info "En Wayland hace falta cerrar y abrir sesion (no vale Alt+F2 r)."
+            fi
         fi
     else
         aviso_contado "No hay extension/metadata.json (o no tiene 'uuid'): extension omitida."
@@ -1220,7 +1241,8 @@ $APP_NOMBRE - instalador de la aplicacion
     sudo $0 --sin-extension
         Instala sin la extension de GNOME Shell.  Se puede combinar con
         --con-udev.  La aplicacion funciona igual; solo falta el atajo de
-        Configuracion rapida.
+        Configuracion rapida.  Sin GNOME Shell no hace falta: la extension
+        no se copia sola.
 
     sudo $0 --uninstall
         Desinstala todo lo que puso, y lo comprueba fichero a fichero.
