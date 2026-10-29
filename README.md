@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <sub>Proyecto personal. Escrito y probado para <b>un modelo concreto</b>: Acer Nitro AN17-51 (Spacia_RTH, BIOS V1.11).</sub>
+  <sub>Proyecto personal. Escrito y probado para <b>un modelo concreto</b>: Acer Nitro AN17-51 (Spacia_RTH, BIOS V1.11 y V1.12).</sub>
 </p>
 
 ---
@@ -2221,9 +2221,12 @@ para descubrirlos.
 ### Lo primero: el alcance
 
 Esto se escribio, se midio y se probo en **un** portatil: Acer Nitro AN17-51
-(Spacia_RTH, BIOS V1.11), primero con Arch Linux, kernel `linux-zen` y GNOME
-50.4 sobre Wayland, y desde el 2026-09-25 tambien con Solus 4.9, kernel
-`linux-current` 7.2.7 y GNOME 50.5. **Se mantienen esas dos distribuciones y
+(Spacia_RTH, BIOS V1.11; el 2026-10-28 se comprobo tambien con la V1.12),
+primero con Arch Linux, kernel `linux-zen` y GNOME 50.4 sobre Wayland; desde
+el 2026-09-25 tambien con Solus 4.9, kernel `linux-current` 7.2.7 y GNOME
+50.5, y desde el 2026-10-17 con Ubuntu 26.04.1 LTS, kernel 7.0.0-38 y GNOME
+50.1. En Arch se usa ademas con Hyprland 0.56.2 y Caelestia, sin la extension
+(ver [En Hyprland](#en-hyprland)). **Se mantienen esas tres distribuciones y
 ninguna mas.** Todo lo demas es hipotesis, y en este repositorio las
 hipotesis van declaradas como tales.
 
@@ -2259,13 +2262,15 @@ src/gekkonitro/     la aplicacion GTK4/libadwaita
                     GNOME.  Sin GTK
 extension/          extension de GNOME Shell 50. Funciona sin la aplicacion
 packaging/          helper privilegiado, politica polkit, reglas udev, preset
-                    de systemd y los cuatro instaladores
+                    de systemd y los instaladores
   solus/            el driver del RGB sin DKMS: lo que usa instalar-rgb.sh en
                     Solus
+  ubuntu/           el driver del RGB por DKMS, con red de seguridad y Secure
+                    Boot: lo que usa instalar-rgb.sh en Ubuntu
 rgb/                copia MODIFICADA de Linuwu-Sense + DKMS. Codigo ajeno
 data/               icono, .desktop
-instalar.sh         instalacion facil: dependencias de Arch o de Solus y los
-                    tres scripts de packaging/ en orden
+instalar.sh         instalacion facil: dependencias de Arch, Solus o Ubuntu y
+                    los tres scripts de packaging/ en orden
 nitro-gekko         lanzador de desarrollo: ejecuta el repositorio sin instalar
 ```
 
@@ -2419,17 +2424,20 @@ parrafo de «por que» dentro del codigo.
     `extension/extension.js`. Lo mismo vale para las reglas de que modos se
     ofrecen con cargador y con bateria (`perfiles_permitidos()` y
     `perfilesPermitidos()`).
-24. **Dos distribuciones, Arch y Solus, y las dos a la vez.** Todo cambio en
-    `packaging/` o en `instalar.sh` tiene que valer en las dos, y la orden que
-    se le sugiere al usuario (pacman o eopkg) sale de mirar `/etc/os-release`,
-    nunca se da por hecha. Los scripts aceptan `OS_RELEASE=/ruta/falsa` para
-    ver lo que dirian en la otra sin tenerla delante.
-25. **En Solus no se quita la linea `install` de `nitro-gekko-rgb.conf`, ni el
-    `predator_v4=1` de `acer-wmi.conf` mientras siga el RGB.** Son las dos
-    mitades de la red de seguridad: sin ellas, el primer arranque tras
-    actualizar el kernel es sin perfiles, sin RPM y sin RGB, porque alli no hay
-    DKMS que recompile antes de reiniciar. Y `instalar-rgb-solus.sh` no se da
-    por bueno sin haber PROBADO esa red (su paso 6).
+24. **Tres distribuciones, Arch, Solus y Ubuntu, y las tres a la vez.** Todo
+    cambio en `packaging/` o en `instalar.sh` tiene que valer en las tres, y
+    la orden que se le sugiere al usuario (pacman, eopkg o apt) sale de mirar
+    `/etc/os-release`, nunca se da por hecha. Los scripts aceptan
+    `OS_RELEASE=/ruta/falsa` para ver lo que dirian en otra sin tenerla
+    delante.
+25. **En Solus y en Ubuntu no se quita la linea `install` de
+    `nitro-gekko-rgb.conf`, ni el `predator_v4=1` de `acer-wmi.conf` mientras
+    siga el RGB.** Son las dos mitades de la red de seguridad: sin ellas, el
+    primer arranque en que `linuwu_sense` no cargue es sin perfiles, sin RPM y
+    sin RGB. En Solus eso pasa tras cada kernel nuevo, porque alli no hay DKMS
+    que recompile antes de reiniciar; en Ubuntu, mientras la clave de Secure
+    Boot no este enrolada o si un kernel no compila. Y `instalar-rgb-solus.sh`
+    no se da por bueno sin haber PROBADO esa red (su paso 6).
 26. **Toda unidad de `/usr/lib/systemd/system` con `[Install]` va en
     `packaging/50-nitro-gekko.preset`.** Si no, `usysconf` la desactiva en la
     siguiente operacion de `eopkg`, sin avisar (medido el 2026-09-25). Las de
@@ -2495,7 +2503,9 @@ bueno:
 bash -n instalar.sh packaging/install.sh packaging/preparar-sistema.sh \
         packaging/instalar-rgb.sh packaging/probar-rgb.sh \
         packaging/solus/instalar-rgb-solus.sh \
-        packaging/solus/nitro-gekko-rgb-solus             # sintaxis, sin ejecutar
+        packaging/solus/nitro-gekko-rgb-solus \
+        packaging/ubuntu/instalar-rgb-ubuntu.sh \
+        packaging/ubuntu/zz-nitro-gekko-rgb               # sintaxis, sin ejecutar
 python3 -m py_compile src/gekkonitro/*.py packaging/nitro-gekko-helper
 udevadm verify packaging/99-nitro-gekko.rules               # lo mismo que hace install.sh
 xmllint --noout --valid packaging/org.thegekko.nitrogekko.policy
@@ -2695,7 +2705,7 @@ No es una lista de tareas pendientes. Es una lista de cosas decididas:
 | `--con-udev` por defecto | quita la validacion del helper y abre seis rutas a cualquier proceso del usuario |
 | Un demonio D-Bus con polkit por metodo | anadiria un proceso privilegiado permanente para ganar granularidad que hoy no hace falta |
 | Perfiles o efectos codificados a mano | se leen del kernel y del driver, que es lo que los hace correctos manana |
-| Otras distribuciones | se mantienen Arch y Solus. Cada una trae su gestor de paquetes, su manera de recompilar modulos (DKMS o no) y sus rarezas (los presets de Solus, su `/etc` casi vacio), y cada una exige su tanda de pruebas en el portatil. `instalar.sh` se planta en cualquier otra |
+| Otras distribuciones | se mantienen Arch, Solus y Ubuntu. Cada una trae su gestor de paquetes, su manera de recompilar modulos (DKMS o no) y sus rarezas (los presets de Solus, su `/etc` casi vacio), y cada una exige su tanda de pruebas en el portatil. `instalar.sh` se planta en cualquier otra |
 
 ### Sobre este README y los ficheros que no se publican
 
