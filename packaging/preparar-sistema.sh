@@ -329,6 +329,26 @@ if [[ -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
         info "temperatura de bateria: lectura descartada (bruto '${TEMP_BAT:-nada}')"
         info "   el EC devuelve valores imposibles de vez en cuando; vuelve a mirar."
     fi
+elif [[ "$MODO" != "revertir" ]] && modinfo acer_wmi_battery >/dev/null 2>&1; then
+    # Instalado pero sin cargar.  Pasa justo al instalarlo: el hook de pacman
+    # recarga systemd-modules-load ANTES de que DKMS termine de compilarlo
+    # ("Failed to find module 'acer_wmi_battery'", visto el 2026-10-28), y
+    # hasta el siguiente arranque no hay temperatura de la bateria.  Antes
+    # este paso lo daba por bueno -el limite ya lo pone linuwu_sense- y no
+    # lo cargaba nunca.
+    falta "acer-wmi-battery esta instalado pero no cargado: sin el no hay temperatura de la bateria"
+    if [[ "$MODO" == "aplicar" ]]; then
+        modprobe acer_wmi_battery 2>/dev/null
+        sleep 1
+        if [[ -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
+            ok "cargado acer_wmi_battery"
+            CAMBIOS=1
+        else
+            mal "no se ha podido cargar. Mira:  sudo dmesg | grep -i acer"
+        fi
+    else
+        info "Lo carga:  sudo modprobe acer_wmi_battery   (o este script sin --revisar)"
+    fi
 elif [[ -e /sys/devices/platform/acer-wmi/nitro_sense/battery_limiter ]]; then
     # El limite ya no depende de este modulo: linuwu_sense lo da por el EC.
     # Antes se decia «la app no podra tocar el limite de carga» tambien aqui,
@@ -349,9 +369,14 @@ fi
 # Carga temprana: sin esto, tras un reinicio el modulo puede no estar cargado
 # cuando arranca la app y el limite de bateria sale como no disponible.
 CONF_CARGA=/etc/modules-load.d/acer-wmi-battery.conf
+# El paquete del AUR ya trae el suyo en /usr/lib: con ese basta, y escribir
+# otro en /etc solo duplicaba la linea.
+CONF_PAQUETE=/usr/lib/modules-load.d/acer-wmi-battery.conf
 if [[ -e /sys/bus/wmi/drivers/acer-wmi-battery/health_mode ]]; then
     if [[ -f "$CONF_CARGA" ]]; then
         ok "carga temprana configurada"
+    elif grep -qs '^acer_wmi_battery' "$CONF_PAQUETE"; then
+        ok "carga temprana configurada (la trae el paquete: $CONF_PAQUETE)"
     else
         falta "sin carga temprana del modulo de bateria"
         if [[ "$MODO" == "aplicar" ]]; then

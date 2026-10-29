@@ -6,6 +6,8 @@ Modulos:
     ajustes     preferencias del usuario en JSON
     grafica     grafica de RPM con cairo
     window      ventana principal
+    calibracion fase y tiempo de la calibracion de la bateria, sin GTK
+    filacalibracion  la fila que la ensena
     avisos      aviso de cambio de modo fuera de GNOME, sin GTK
 """
 

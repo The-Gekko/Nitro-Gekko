@@ -221,7 +221,7 @@ AN17-51 (version 5.0.1327, el 23 de septiembre de 2026), no de su publicidad:
 | Carga de bateria optimizada (80 %) | **si** | |
 | Cargador USB con el equipo apagado (10, 20, 30 %) | **si** | |
 | Overdrive de LCD | **si** | |
-| Calibracion de la bateria | **si**, con confirmacion | la ofrece Care Center en Windows |
+| Calibracion de la bateria | **si**, con confirmacion, y ensena en que fase va y cuanto falta | la ofrece Care Center en Windows; ver [La calibracion, fase por fase](#la-calibracion-de-la-bateria-fase-por-fase) |
 | Salud de la bateria | capacidad frente a la de fabrica y ciclos | |
 | Modo de sonido DTS / TrueHarmony | **no**, EasyEffects | ver [El sonido](#el-sonido-el-dtsx-ultra-que-traia-windows) |
 | Modo de GPU (MUX) | **no aparece** en NitroSense en este modelo | el servicio responde `SUPPORT_GPU_MODE = 0` |
@@ -1441,12 +1441,86 @@ Dos cosas mas de Ubuntu que el instalador ya tiene en cuenta:
 | **Color por zona** | Un color independiente para cada una de las cuatro zonas, con selector de color |
 | **Apagado automatico** | El interruptor que traia NitroSense: teclado siempre encendido, o que se apague solo tras ~30 s sin teclear |
 | **Carga USB apagado** | Umbral de bateria (0 / 10 / 20 / 30 %) por debajo del cual deja de cargar por USB con el portatil apagado |
-| **Calibracion de bateria** | Va en la pestana Sistema, grupo Bateria, **detras de un dialogo** con los avisos de NitroSense y solo con el cargador enchufado: un ciclo descarga y recarga la bateria entera durante horas. Nunca se repone al arrancar |
+| **Calibracion de bateria** | Va en la pestana Sistema, grupo Bateria, **detras de un dialogo** con los avisos de NitroSense y solo con el cargador enchufado: un ciclo descarga y recarga la bateria entera durante horas. Nunca se repone al arrancar. Ensena en que fase va y cuanto falta: [La calibracion, fase por fase](#la-calibracion-de-la-bateria-fase-por-fase) |
 | **Sonido de arranque** | Silenciar el sonido de encendido |
 | **Teclas especiales** | Las Sticky Keys de accesibilidad, que NitroSense pone junto al apagado del teclado. Es el ajuste de GNOME, sin contrasena |
 
 Los modos **Onda** y **Desplazamiento** exigen direccion 1 o 2; con 0 el driver
 devuelve `-EINVAL`. La aplicacion lo corrige sola.
+
+## La calibracion de la bateria, fase por fase
+
+Lo que hace, medido en este equipo la noche del 2026-10-29: 488 lecturas, una
+por minuto, con el cargador puesto todo el tiempo. Estan en
+`tests/datos/calibracion-2026-10-29.csv`.
+
+| Fase | Duracion | Que pasa |
+|---|---|---|
+| 1. Cargar hasta el 100 % | 6 min, desde el 82 % | carga normal |
+| 2. Terminar de llenarla | 1 h 36 min | `status` dice `Full`, pero sigue entrando corriente: de 4 A a 0,4 A |
+| 3. Descargarla con el cargador puesto | 3 h 17 min | del 100 al 4 %, a 1,23 A casi fijos (1,09 a 1,36 A): la impone el EC |
+| 4. Recargar hasta el 100 % | 1 h 47 min | del 6 al 100 % |
+| **Y despues** | — | **no se cierra sola**: `battery_calibration` seguia en 1 una hora y veinte minutos despues, y hubo que pulsar Detener |
+
+En total, unas 6 h 45 min. El resultado aqui: la capacidad que reconoce la
+bateria paso de 3067 a 4051 mAh, del 52 al 69 % de los 5850 de fabrica. El
+medidor la subestimaba —tras meses con el limite del 80 %, nunca la veia ni
+llena ni vacia—, y la capacidad nueva aparece al final de la descarga, al 5 %.
+
+**Antes de empezar, quita el limite del 80 %.** Con el puesto la bateria se
+queda en «Not charging» y no puede llenarse; la aplicacion lo avisa si lo ve.
+
+**La aplicacion ensena en que va.** El firmware solo dice 0 o 1, asi que
+`calibracion.py` lo deduce del estado y del porcentaje de la bateria. La fila
+de la calibracion, plegada, dice la fase y cuanto falta («Fase 3 de 4 · 45 % ·
+quedan unas 3 h 46 min»); desplegada, una barra de progreso y las cuatro fases:
+las hechas con lo que duraron, la de ahora con lo que le queda y las que vienen
+con lo que suelen durar. Al terminar resalta Detener y lo dice con un toast.
+Parada, ensena el resultado de la ultima.
+
+**Los tiempos van por el reloj, no por el porcentaje**, y es a proposito. Con
+el medidor descalibrado —que es justo cuando se calibra— el porcentaje no baja
+parejo: marcaba 6 % con 47 min de descarga por delante, y en la recarga paso
+del 6 al 68 % en media hora y tardo otra hora y cuarto en llegar al 100. Lo
+estable es la duracion de cada fase, porque el EC descarga a corriente fija.
+Pasando las 488 lecturas por el modulo, detecta cada cambio de fase en el
+minuto en que ocurrio, y el «falta en total» coincide con lo que falto de
+verdad con menos de un minuto de error. Pero las duraciones de referencia
+salen de esa misma noche, asi que la prueba de verdad sera la siguiente. Para
+entonces ya estimara con las duraciones de la ultima calibracion completa, que
+se guardan al cerrarla: se ajusta sola a medida que se gaste la bateria.
+
+**Sabe en que va aunque cierres la ventana.** El seguimiento se guarda en
+`~/.local/state/nitro-gekko/calibracion.json`, y lo ponen al dia la ventana
+(cada segundo, mientras esta abierta) y `nitro-gekko --avisos` (cada minuto).
+Con la ventana cerrada, en Hyprland, `--avisos` manda una notificacion si se
+desconecta el cargador y otra cuando termina. Si la calibracion se empezo
+fuera de la aplicacion, la fase sale igual, pero sin progreso total, y avisa
+cuando no puede distinguir el principio del final (una bateria llena puede ser
+la fase 2 o el final).
+
+**Lo que no da por bueno**, porque engaña, y cada caso con su prueba en
+`tests/test_calibracion.py`:
+
+- **Un «Discharging» sin cargador no es la fase 3**: es que alguien lo ha
+  desenchufado. Ni se apunta como descarga ni cuenta lo que baje el porcentaje
+  mientras tanto.
+- **Un «Charging» suelto en plena descarga no es la recarga.** Para pasar a la
+  fase 4, la descarga tiene que haber llegado abajo (15 % o menos).
+- **Una fase que se empezo a ver tras un rato sin mirar** —todo cerrado, o el
+  equipo suspendido— no tiene hora de inicio fiable: ni se estima por el reloj
+  ni guarda su duracion, que si no contaminaria las estimaciones de la
+  siguiente calibracion. Por lo mismo, una duracion guardada que se salga del
+  doble o de la mitad de la medida se ignora.
+- **Dos procesos escribiendo a la vez.** La ventana y `--avisos` cargan, cambian
+  y guardan el fichero con un cerrojo (`flock`), y `--avisos` solo sigue una
+  calibracion que ya este apuntada: nunca abre una. Sin eso, una lectura suya
+  hecha justo antes de pulsar Detener reabria la calibracion recien cerrada y,
+  al cerrarla otra vez, pisaba el resultado bueno.
+
+Lo que cuesta, y solo mientras hay una calibracion en marcha: cinco ficheros de
+la bateria de 0,012 ms cada segundo, y `battery_calibration` (10 ms de WMI) una
+vez por minuto.
 
 ## El boton con el logo de la marca
 
@@ -2212,6 +2286,12 @@ hecho (`src/gekkonitro/avisos.py`):
 
 En GNOME no hace falta: con la extension saldrian dos avisos por cambio.
 
+Ademas vigila la **calibracion de la bateria**, que suele dejarse de noche con
+la ventana cerrada: avisa si se desconecta el cargador y cuando termina, porque
+el firmware no la cierra solo (ver [La calibracion de la bateria, fase por
+fase](#la-calibracion-de-la-bateria-fase-por-fase)). En GNOME, donde no se
+arranca, esos avisos solo los da la ventana abierta.
+
 ---
 
 ## Como tratar este programa
@@ -2278,7 +2358,11 @@ src/gekkonitro/     la aplicacion GTK4/libadwaita
   __main__.py       Adw.Application, ventana unica.  Despacha --avisos antes
                     de importar GTK
   avisos.py         nitro-gekko --avisos: el aviso de cambio de modo fuera de
-                    GNOME.  Sin GTK
+                    GNOME, y los de la calibracion.  Sin GTK
+  calibracion.py    en que fase va la calibracion de la bateria y cuanto
+                    falta.  Python puro, sin /sys: se prueba sin hardware
+  filacalibracion.py  la fila de la calibracion; solo pinta lo que dice
+                    calibracion.py
 extension/          extension de GNOME Shell 50. Funciona sin la aplicacion
 packaging/          helper privilegiado, politica polkit, reglas udev, preset
                     de systemd y los instaladores
@@ -2291,6 +2375,8 @@ data/               icono, .desktop
 instalar.sh         instalacion facil: dependencias de Arch, Solus o Ubuntu y
                     los tres scripts de packaging/ en orden
 nitro-gekko         lanzador de desarrollo: ejecuta el repositorio sin instalar
+tests/              pruebas de la logica pura, con unittest; en datos/, la
+                    calibracion real del 2026-10-29
 ```
 
 **Dos ficheros concentran casi todo el riesgo**, y conviene abrirlos antes que
@@ -2351,7 +2437,7 @@ parrafo de «por que» dentro del codigo.
    | `fan_speed` | **0,007 ms** | ciclo de 1 Hz: no es WMI, el driver devuelve dos variables suyas |
    | `battery_limiter` | 4,888 ms | ciclo de 10 s, y solo si no esta el modulo DKMS |
    | `lcd_override` | 5,229 ms | bajo demanda, nunca en un temporizador |
-   | `battery_calibration` | 4,9 ms | bajo demanda: al abrir, tras escribir y al volver a la ventana |
+   | `battery_calibration` | 4,9 ms (10 ms el 2026-10-29) | bajo demanda: al abrir, tras escribir y al volver a la ventana; y, solo con una calibracion en marcha, cada 60 s (ventana y `--avisos`) |
    | `usb_charging` | 6,775 ms | dentro de `leer_teclado()`, bajo demanda |
    | `leer_teclado()` entero | 47 a 53 ms | al abrir la pagina y tras cada cambio |
 
@@ -2513,10 +2599,12 @@ contra codigo viejo:
 de sistema: un `.bak` del editor acaba en `/usr/lib/nitro-gekko/` y se queda
 ahi. Mira que hay antes de instalar.
 
-**No hay pruebas automaticas, ni CI, ni `pyproject.toml`, ni linters.** El
-estilo es una convencion, no una regla que compruebe una maquina. Lo que si hay
-son cuatro comprobaciones baratas, y son las que se pasan antes de dar nada por
-bueno:
+**Hay pocas pruebas automaticas, y no hay CI, ni `pyproject.toml`, ni
+linters.** Las pruebas son de la logica que se puede probar sin hardware:
+`tests/test_calibracion.py`, con `unittest` de la biblioteca estandar, asi que
+no hace falta instalar nada (si tienes `pytest`, tambien las ejecuta). El
+estilo es una convencion, no una regla que compruebe una maquina. Estas son
+las comprobaciones baratas que se pasan antes de dar nada por bueno:
 
 ```bash
 bash -n instalar.sh packaging/install.sh packaging/preparar-sistema.sh \
@@ -2526,6 +2614,7 @@ bash -n instalar.sh packaging/install.sh packaging/preparar-sistema.sh \
         packaging/ubuntu/instalar-rgb-ubuntu.sh \
         packaging/ubuntu/zz-nitro-gekko-rgb               # sintaxis, sin ejecutar
 python3 -m py_compile src/gekkonitro/*.py packaging/nitro-gekko-helper
+PYTHONPATH=src python3 -m unittest discover -s tests       # la logica pura
 udevadm verify packaging/99-nitro-gekko.rules               # lo mismo que hace install.sh
 xmllint --noout --valid packaging/org.thegekko.nitrogekko.policy
 ```

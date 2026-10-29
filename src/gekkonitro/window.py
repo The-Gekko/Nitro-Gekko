@@ -26,6 +26,8 @@ from __future__ import annotations
 import glob
 import math
 import threading
+import time
+import traceback
 
 import cairo  # viene con GTK4/pycairo; se usa para el degradado de las muestras
 
@@ -36,12 +38,17 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import escenarios, sysfs  # noqa: E402
+from . import calibracion, escenarios, sysfs  # noqa: E402
 from .ajustes import Ajustes  # noqa: E402
+from .filacalibracion import FilaCalibracion  # noqa: E402
 from .grafica import GraficaRPM  # noqa: E402
 
 #: Periodo del bucle barato (ventiladores, temperaturas, PL1).
 PERIODO_RAPIDO = 1
+#: Con una calibracion en marcha, cada cuantos tics del bucle barato se relee
+#: si sigue en marcha.  battery_calibration es WMI de verdad (10 ms, medido el
+#: 2026-10-29): una vez por minuto, no a 1 Hz (regla 9 del README).
+TICS_RELEER_CALIBRACION = 60
 #: Periodo del bucle caro (perfil + temperatura de bateria: ~10 ms de ACPI).
 PERIODO_LENTO = 10
 #: Periodo de consulta a la GPU (nvidia-smi despierta la tarjeta).
@@ -219,6 +226,9 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._hw_overdrive: bool | None = None
         self._hw_tecla_modo: bool | None = None
         self._hw_calibracion: bool | None = None
+        self._tics_calibracion = 0
+        #: Para avisar UNA vez, con un toast, de que la calibracion termino.
+        self._avisado_fin_calibracion = False
         self._id_fan: int | None = None
         #: Una escritura de ventiladores esperando al dialogo de contrasena.
         #: Mientras dure, el tic de 1 Hz no devuelve los controles al valor
@@ -1112,35 +1122,47 @@ class VentanaNitro(Adw.ApplicationWindow):
         self._fila_calibracion = None
         if self._control.hay_calibracion():
             self._hw_calibracion = self._control.leer_calibracion()
-            self._fila_calibracion = Adw.ActionRow(
-                title="Calibracion de la bateria",
-                subtitle="Se recomienda cada 3 meses. Tarda varias horas.",
-            )
-            self._fila_calibracion.set_subtitle_lines(0)
-            self._btn_calibracion = Gtk.Button(valign=Gtk.Align.CENTER)
-            self._btn_calibracion.connect("clicked", self._al_pulsar_calibracion)
-            self._fila_calibracion.add_suffix(self._btn_calibracion)
-            self._pintar_calibracion()
-            grupo.add(self._fila_calibracion)
+            self._fila_calibracion = FilaCalibracion(self._al_pulsar_calibracion)
+            self._seguir_calibracion()
+            grupo.add(self._fila_calibracion.fila)
         return grupo
 
-    def _pintar_calibracion(self) -> None:
-        """Pone el boton y el subtitulo de la calibracion segun su estado real."""
+    def _seguir_calibracion(self) -> None:
+        """Apunta en que va la calibracion y la pinta.  Las cuentas, en
+        calibracion.py; aqui solo se le pasan las lecturas.
+
+        Solo se lee la bateria si hay una en marcha, o una apuntada que
+        cerrar; el resto del tiempo se pinta el resultado de la ultima.  El
+        estado pasa por calibracion.actualizar(), con cerrojo, porque
+        'nitro-gekko --avisos' tambien lo escribe (lo que ya ha avisado):
+        pisarlo con una copia vieja le haria repetir los avisos.
+
+        Nada de aqui puede escapar: se llama desde el tic de 1 Hz, y una
+        excepcion lo daria de baja entero, no solo a esta fila.
+        """
         if self._fila_calibracion is None:
             return
-        if self._hw_calibracion:
-            self._btn_calibracion.set_label("Detener")
-            self._btn_calibracion.remove_css_class("suggested-action")
-            self._fila_calibracion.set_subtitle(
-                "En marcha. No desconectes el cargador hasta que termine."
-            )
-        else:
-            self._btn_calibracion.set_label("Calibrar…")
-            self._fila_calibracion.set_subtitle(
-                "Se recomienda cada 3 meses. Tarda varias horas."
-                if self._hw_calibracion is not None else
-                "No se ha podido leer si hay una calibracion en marcha."
-            )
+        try:
+            estado = calibracion.cargar()
+            lectura = vista = None
+            if self._hw_calibracion or estado.en_curso is not None:
+                lectura = calibracion.lectura_de(
+                    sysfs.detalle_bateria(),
+                    calibrando=self._hw_calibracion,
+                    en_corriente=self._corriente,
+                    momento=time.time(),
+                )
+                estado, _ = calibracion.actualizar(lambda e: calibracion.avanzar(e, lectura))
+                vista = calibracion.vista(estado, lectura)
+            terminada = vista is not None and vista.fase is calibracion.Fase.TERMINADA
+            if terminada and not self._avisado_fin_calibracion:
+                # El firmware no la cierra solo (medido: seguia en marcha 1 h
+                # 20 min despues de acabar).  Sin esto, nadie lo diria.
+                self._notificar("La calibracion ha terminado: pulsa Detener.")
+            self._avisado_fin_calibracion = terminada
+            self._fila_calibracion.pintar(self._hw_calibracion, vista, lectura, estado.ultima)
+        except Exception:  # noqa: BLE001 - ver el docstring
+            traceback.print_exc()
 
     # -- grupo 5: temperaturas -----------------------------------------
 
@@ -1375,6 +1397,16 @@ class VentanaNitro(Adw.ApplicationWindow):
             # devuelve al automatico al pasar a Silencioso o Eco, y al
             # enchufar o desenchufar repone los de la otra fuente.
             self._actualizar_ventiladores_manuales(estado)
+
+            # Calibracion en marcha: en que fase va, con lecturas de 0,012 ms.
+            # Si sigue en marcha se mira una vez por minuto, que es WMI (10
+            # ms); el final de verdad lo marca Detener, que relee al momento.
+            if self._hw_calibracion and self._fila_calibracion is not None:
+                self._tics_calibracion += 1
+                if self._tics_calibracion >= TICS_RELEER_CALIBRACION:
+                    self._tics_calibracion = 0
+                    self._hw_calibracion = self._control.leer_calibracion()
+                self._seguir_calibracion()
         finally:
             self._cargando = False
         return GLib.SOURCE_CONTINUE
@@ -2501,11 +2533,12 @@ class VentanaNitro(Adw.ApplicationWindow):
         )
 
     def _refrescar_calibracion(self) -> None:
-        """Relee si hay una calibracion en marcha (4,9 ms de WMI, bajo demanda)."""
+        """Relee si hay una calibracion en marcha (10 ms de WMI, bajo demanda)."""
         if self._fila_calibracion is None:
             return
         self._hw_calibracion = self._control.leer_calibracion()
-        self._pintar_calibracion()
+        self._tics_calibracion = 0
+        self._seguir_calibracion()
 
     def _al_pulsar_calibracion(self, _boton) -> None:
         """Detener va directo; empezar, solo tras el dialogo de NitroSense.
@@ -2543,8 +2576,24 @@ class VentanaNitro(Adw.ApplicationWindow):
             return
         self._lanzar_escritura(
             lambda cb: self._control.escribir_calibracion(True, al_terminar=cb),
-            self._refrescar_calibracion, self._refrescar_calibracion,
+            self._calibracion_aceptada, self._refrescar_calibracion,
         )
+
+    def _calibracion_aceptada(self) -> None:
+        """El firmware acepto empezar: se apunta el momento.  Es lo que deja
+        estimar por el reloj y ensenar el progreso total; una calibracion que
+        ya estaba en marcha al abrir la ventana no lo tiene."""
+        try:
+            lectura = calibracion.lectura_de(
+                sysfs.detalle_bateria(),
+                calibrando=True,
+                en_corriente=self._corriente,
+                momento=time.time(),
+            )
+            calibracion.actualizar(lambda e: calibracion.empezar(e, lectura))
+        except Exception:  # noqa: BLE001 - sin el inicio solo se pierde el progreso
+            traceback.print_exc()
+        self._refrescar_calibracion()
 
     def _al_cambiar_salud(self, *_args) -> None:
         deseado = self._sw_salud.get_active()

@@ -14,6 +14,13 @@ mako, dunst, swaync...  Se lanza al entrar en la sesion:
 
 En GNOME no hace falta: saldrian dos avisos por cada cambio.
 
+Tambien vigila la calibracion de la bateria, que dura unas siete horas y suele
+dejarse de noche con la ventana cerrada.  Avisa si se desconecta el cargador y
+cuando termina, porque el firmware NO la cierra solo y hay que pulsar Detener
+(medido el 2026-10-29: seguia en marcha 1 h 20 min despues de acabar).  Solo
+mira cuando hay una apuntada en el estado de calibracion.py: el resto del
+tiempo no toca el firmware.
+
 No carga GTK.  Es un proceso que vive toda la sesion, y GTK4 con libadwaita le
 sumaria 25 MB por nada (33 MB con Gio solo, 58 MB con GTK4 y Adw, medido en
 este equipo).  Por eso __main__ lo despacha antes de importarlos.
@@ -22,11 +29,20 @@ este equipo).  Por eso __main__ lo despacha antes de importarlos.
 from __future__ import annotations
 
 import sys
+import time
+import traceback
 
 from gi.repository import Gio, GLib
 
-from . import APP_ID, NOMBRE
-from .sysfs import ETIQUETAS_PERFIL, PERFIL_LEGACY, leer_perfil_confirmado
+from . import APP_ID, NOMBRE, calibracion
+from .sysfs import (
+    ETIQUETAS_PERFIL,
+    PERFIL_LEGACY,
+    ControlNitro,
+    detalle_bateria,
+    en_corriente,
+    leer_perfil_confirmado,
+)
 
 #: Id propio para que GApplication garantice UNA sola copia: una segunda
 #: 'nitro-gekko --avisos' se registra en el bus, ve que ya hay otra y sale sin
@@ -53,6 +69,12 @@ DURACION_MS = 2500
 #: quedan en una sola relectura.
 MS_AGRUPAR = 150
 
+#: Cada cuanto se mira la calibracion.  Solo cuesta algo si hay una apuntada:
+#: entonces battery_calibration es WMI de verdad (10 ms), una vez por minuto.
+#: Sin ninguna, es leer un JSON pequeno o ver que no existe.
+S_CALIBRACION = 60
+ICONO_CALIBRACION = "battery-caution-symbolic"
+
 
 class Avisos(Gio.Application):
     def __init__(self) -> None:
@@ -68,6 +90,9 @@ class Avisos(Gio.Application):
         #: apilarse debajo, que es lo que haria pulsar la tecla de modo cuatro
         #: veces seguidas.
         self._id_aviso = 0
+        #: Avisos de la calibracion ya dados que no se pudieron apuntar en el
+        #: fichero de estado.  Solo se usa si guardar falla.
+        self._avisados_sin_guardar: set[str] = set()
 
     def do_startup(self) -> None:  # noqa: N802 (nombre impuesto por GObject)
         Gio.Application.do_startup(self)
@@ -77,6 +102,7 @@ class Avisos(Gio.Application):
             Gio.FileMonitorFlags.NONE, None
         )
         self._vigilante.connect("changed", self._al_cambiar)
+        GLib.timeout_add_seconds(S_CALIBRACION, self._mirar_calibracion)
         # Sin ventana, GApplication saldria nada mas arrancar.
         self.hold()
 
@@ -112,21 +138,75 @@ class Avisos(Gio.Application):
             # sustituyen en sitio en vez de animarlo como notificacion nueva.
             "x-canonical-private-synchronous": GLib.Variant("s", "nitro-gekko-modo"),
         }
+        self._id_aviso = self._enviar(
+            f"Modo {nombre}", "", ICONOS_PERFIL.get(perfil, APP_ID),
+            pistas, DURACION_MS, self._id_aviso,
+        )
+
+    def _mirar_calibracion(self) -> bool:
+        """Apunta en que va la calibracion y avisa de lo que haga falta.
+
+        Las mismas cuentas que la ventana (calibracion.py), y sobre el mismo
+        fichero de estado: lo que apunte aqui con la ventana cerrada -como el
+        momento en que empezo la descarga- lo aprovecha ella al abrirse.
+
+        Nada puede escapar de aqui: una excepcion daria de baja el
+        temporizador, y la vigilancia de toda la noche moriria sin decir nada.
+        """
+        try:
+            self._mirar_calibracion_ahora()
+        except Exception:  # noqa: BLE001 - ver el docstring
+            traceback.print_exc()
+        return GLib.SOURCE_CONTINUE
+
+    def _mirar_calibracion_ahora(self) -> None:
+        if calibracion.cargar().en_curso is None:
+            return
+        lectura = calibracion.lectura_de(
+            detalle_bateria(),
+            calibrando=ControlNitro.leer_calibracion(),
+            en_corriente=en_corriente(),
+            momento=time.time(),
+        )
+        mensajes: list[str] = []
+
+        def cambio(estado: calibracion.Estado) -> calibracion.Estado:
+            # avanzar_existente: esta lectura se hizo antes de coger el
+            # fichero, y no puede reabrir una calibracion que la ventana acabe
+            # de cerrar con Detener.
+            nuevo, avisos = calibracion.notificaciones(
+                calibracion.avanzar_existente(estado, lectura), lectura)
+            mensajes[:] = avisos
+            return nuevo
+
+        _, guardado = calibracion.actualizar(cambio)
+        if not guardado:
+            # Sin poder apuntar lo avisado en el fichero (disco lleno, sin
+            # permiso), se recuerda aqui: si no, se repetiria cada minuto.
+            mensajes[:] = [m for m in mensajes if m not in self._avisados_sin_guardar]
+            self._avisados_sin_guardar.update(mensajes)
+        pistas = {
+            # Estos SI se quedan en el historial: son para leerlos al volver.
+            "urgency": GLib.Variant("y", 1),
+            "desktop-entry": GLib.Variant("s", APP_ID),
+        }
+        for mensaje in mensajes:
+            self._enviar("Calibracion de la bateria", mensaje, ICONO_CALIBRACION, pistas, -1, 0)
+
+    def _enviar(self, resumen: str, cuerpo: str, icono: str, pistas: dict,
+                duracion_ms: int, reemplaza: int) -> int:
+        """Una notificacion por org.freedesktop.Notifications.  Devuelve su id,
+        o *reemplaza* si no se pudo mandar."""
         parametros = GLib.Variant(
             "(susssasa{sv}i)",
-            (
-                NOMBRE,
-                self._id_aviso,
-                ICONOS_PERFIL.get(perfil, APP_ID),
-                f"Modo {nombre}",
-                "",
-                [],
-                pistas,
-                DURACION_MS,
-            ),
+            (NOMBRE, reemplaza, icono, resumen, cuerpo, [], pistas, duracion_ms),
         )
+        conexion = self.get_dbus_connection()
+        if conexion is None:
+            print("nitro-gekko --avisos: sin bus de sesion, no se puede avisar", file=sys.stderr)
+            return reemplaza
         try:
-            respuesta = self.get_dbus_connection().call_sync(
+            respuesta = conexion.call_sync(
                 "org.freedesktop.Notifications",
                 "/org/freedesktop/Notifications",
                 "org.freedesktop.Notifications",
@@ -137,11 +217,12 @@ class Avisos(Gio.Application):
                 2000,
                 None,
             )
-            self._id_aviso = respuesta.unpack()[0]
+            return respuesta.unpack()[0]
         except GLib.Error as error:
             # Sin servidor de notificaciones el aviso se pierde, pero el
             # proceso sigue: puede que el servidor arranque despues.
             print(f"nitro-gekko --avisos: no se pudo avisar: {error.message}", file=sys.stderr)
+            return reemplaza
 
 
 def main() -> int:

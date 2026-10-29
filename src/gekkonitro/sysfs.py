@@ -45,6 +45,15 @@ lecturas, 20 en las de firmware):
     module/.../cycle_gaming_thermal_profile  0,007 ms            -> bajo demanda
     nitro_sense/battery_calibration ...  5,4 ms    <- WMI real   -> bajo demanda
 
+Para seguir la calibracion de la bateria (calibracion.py), medido el 2026-10-29
+(mediana de 200 lecturas, 20 en la de firmware):
+
+    BAT1/status, capacity, current_now, charge_full(_design)  0,012 a 0,013 ms
+                                                             -> 1 Hz, solo
+                                                                calibrando
+    nitro_sense/battery_calibration ...  10,0 ms   <- WMI real   -> cada 60 s,
+                                                                solo calibrando
+
 Los dos ciclos, medidos otra vez en las mismas condiciones contra la version
 anterior: leer_lento() 10,4 ms frente a 10,2; leer_rapido() sin diferencia.
 Lo que se temia del cargador no se cumple: 'online' cuesta cien veces menos que
@@ -536,6 +545,35 @@ def salud_bateria() -> tuple[float | None, int | None]:
             break
     ciclos = _leer_int(bat / "cycle_count")
     return pct, (ciclos if ciclos else None)
+
+
+@dataclass(slots=True)
+class DetalleBateria:
+    """Lo que necesita calibracion.py para saber en que fase va.
+
+    Cinco ficheros de 0,012 ms (ver la cabecera).  Solo charge_*: es lo que
+    publica este equipo, y con energy_* las cuentas de calibracion.py, que van
+    por porcentaje y por tiempo, no cambian; solo faltarian los mAh.
+    """
+
+    estado: str | None = None
+    porcentaje: int | None = None
+    llena_uah: int | None = None
+    diseno_uah: int | None = None
+    corriente_ua: int | None = None
+
+
+def detalle_bateria() -> DetalleBateria:
+    bat = _bateria_base()
+    if bat is None:
+        return DetalleBateria()
+    return DetalleBateria(
+        estado=_leer_texto(bat / "status"),
+        porcentaje=_leer_int(bat / "capacity"),
+        llena_uah=_leer_int(bat / "charge_full"),
+        diseno_uah=_leer_int(bat / "charge_full_design"),
+        corriente_ua=_leer_int(bat / "current_now"),
+    )
 
 
 def modo_ventiladores(cpu: int | None, gpu: int | None) -> str | None:
