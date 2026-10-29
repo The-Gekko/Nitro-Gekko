@@ -674,6 +674,118 @@ elif [[ -n "$USUARIO" ]] && (( ATAJOS_GNOME )); then
 fi
 
 # ---------------------------------------------------------------------------
+titulo "7. Tecla del microfono (F8)  —  silenciarlo"
+# ---------------------------------------------------------------------------
+# La tecla F8, la del icono del microfono, manda el scancode 0x66 por el
+# teclado i8042.  La tabla de teclas de systemd (60-keyboard.hwdb) le pone
+# micmute a ese mismo 0x66 en cinco Acer recientes -Nitro AN515-47 y
+# ANV15-51, Predator PT314-52s, PHN16-71 y PHN16-72-, pero el AN17-51 no esta,
+# y el kernel le da el nombre por defecto de ese scancode: KEY_F15.  Para XKB
+# eso es XF86Launch6, que no atiende nadie, asi que la tecla llega al
+# escritorio y no hace nada.  Y no deja rastro en journalctl: no es una tecla
+# desconocida, es una tecla con el nombre equivocado.
+#
+# Se le da su nombre con una entrada de hwdb igual que la de esos cinco
+# equipos.  De ahi en adelante es XF86AudioMicMute, y eso ya lo atienden GNOME
+# y Caelestia sin nada mas.  Medido en el AN17-51 el 2026-10-28 (BIOS V1.12)
+# con packaging/capturar-tecla.py.
+#
+# OJO con 0xf0, que tambien sale de este teclado.  La primera version de este
+# paso lo tomo por la tecla del microfono porque era el unico "Unknown key
+# pressed" de journalctl, y lo convertia en micmute.  Era otra tecla: en el
+# Nitro AN515-58 y el Predator PH315-52 la tabla de systemd lo llama
+# kbdillumdown (Fn+F9, bajar la luz del teclado).  En este equipo no se ha
+# comprobado cual es, y por eso no se toca.
+#
+# La entrada va atada al modelo (pnNitroAN17-51): en otro Acer el mismo
+# scancode puede ser otra tecla, y alli no se instala.
+#
+# DONDE SE COMPILA importa mas que el fichero.  'systemd-hwdb update' a secas
+# escribe /etc/udev/hwdb.bin, y udev usa el PRIMER hwdb.bin que encuentra,
+# empezando por /etc.  Arch compila con --usr desde su hook de pacman: un
+# /etc/udev/hwdb.bin creado aqui taparia para siempre, sin avisar, todas las
+# actualizaciones de la tabla de systemd que vinieran despues.  Asi que se
+# compila donde ya este el de la distribucion.  Con --usr se siguen leyendo
+# las fuentes de /etc/udev/hwdb.d (comprobado con --root en un arbol falso).
+HWDB=/etc/udev/hwdb.d/61-nitro-gekko-teclado.hwdb
+
+compilar_hwdb() {
+    if [[ -f /etc/udev/hwdb.bin ]]; then
+        systemd-hwdb update
+    else
+        systemd-hwdb update --usr
+    fi
+}
+
+# El nodo del teclado interno cambia de numero entre arranques: se busca por
+# nombre, como el hwmon 'acer' del paso 1.
+TECLADO_AT=""
+for e in /sys/class/input/event*; do
+    [[ "$(cat "$e/device/name" 2>/dev/null)" == "AT Translated Set 2 keyboard" ]] && TECLADO_AT="${e##*/}"
+done
+# Lo que udev le ha aplicado DE VERDAD al teclado, no lo que diga el fichero:
+# un .hwdb sin compilar no hace nada.  Se lee sin root.
+tecla_66() {
+    [[ -n "$TECLADO_AT" ]] || return 0
+    sed -n 's/^KEYBOARD_KEY_66=//p' < <(udevadm info --query=property --name="/dev/input/$TECLADO_AT" 2>/dev/null)
+}
+T66="$(tecla_66)"
+
+if [[ "$MODO" == "revertir" ]]; then
+    if [[ -f "$HWDB" ]]; then
+        rm -f "$HWDB"
+        compilar_hwdb && ok "borrado $HWDB"
+        # udev ASIGNA teclas pero no las desasigna: la que ya esta puesta en
+        # el kernel sigue hasta reiniciar.
+        info "La tecla del microfono seguira silenciandolo hasta reiniciar."
+        PENDIENTE_REINICIO=1
+    else
+        info "$HWDB no estaba"
+    fi
+elif [[ "$PRODUCTO" != "Nitro AN17-51" ]]; then
+    info "el scancode de la tecla del microfono se midio en el AN17-51: en tu modelo no se toca nada."
+    info "Si la tuya no responde, averigua su scancode con:"
+    info "   sudo python3 packaging/capturar-tecla.py"
+elif [[ -z "$TECLADO_AT" ]]; then
+    falta "no se encuentra el teclado interno (AT Translated Set 2 keyboard)"
+elif [[ "$T66" == micmute ]]; then
+    ok "la tecla del microfono lo silencia (KEY_MICMUTE)"
+elif [[ -n "$T66" && ! -f "$HWDB" ]]; then
+    ok "la tecla del microfono ya tiene nombre ($T66), puesto por otra regla: no se toca"
+else
+    falta "la tecla del microfono llega como KEY_F15 y no la atiende nadie (scancode 0x66)"
+    if [[ "$MODO" == "aplicar" ]]; then
+        install -d "$(dirname "$HWDB")"
+        cat > "$HWDB" <<'HWDB'
+# Puesto por Nitro Gekko (packaging/preparar-sistema.sh, paso 7).
+# La tecla del microfono (F8) del Acer Nitro AN17-51.  Sin esto el kernel la
+# llama KEY_F15, que no atiende nadie.  Es la misma entrada que trae systemd
+# para el Nitro AN515-47 y ANV15-51 y los Predator PHN16-71 y PHN16-72.
+# Para quitarlo:  sudo ./packaging/preparar-sistema.sh --revertir
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnAcer*:pnNitroAN17-51:*
+ KEYBOARD_KEY_66=micmute                                # Microphone mute button
+HWDB
+        compilar_hwdb
+        # Se reaplica al teclado YA, sin reiniciar, y se comprueba leyendo lo
+        # que udev le puso, no dandolo por hecho.
+        udevadm trigger --action=change "/sys/class/input/$TECLADO_AT"
+        udevadm settle --timeout=5
+        if [[ "$(tecla_66)" == micmute ]]; then
+            ok "tecla del microfono -> silenciarlo ($HWDB)"
+            # Hipotesis, no comprobada aqui: libinput (debajo de GNOME y de
+            # Hyprland) lee al abrir el teclado que teclas tiene, y una que no
+            # estaba entonces puede no llegarle hasta volver a abrirlo.
+            # Cerrar sesion lo vuelve a abrir.
+            info "Si en esta sesion todavia no responde, cierra sesion y vuelve a entrar."
+            CAMBIOS=1
+        else
+            mal "escrito $HWDB, pero udev no lo ha aplicado al teclado"
+            info "Reinicia y vuelve a mirar con --revisar."
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 titulo "Resumen"
 # ---------------------------------------------------------------------------
 case "$MODO" in

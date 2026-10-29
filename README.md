@@ -442,6 +442,10 @@ equipo y no lecturas:
 - El **boton del logo de la marca**. Aqui emite `KEY_PRESENTATION`; en tu
   equipo puede ser otra tecla. Averigualo con
   `sudo python3 packaging/capturar-tecla.py` y cambia el atajo a mano.
+- La **tecla del microfono** (F8). El paso 7 de `preparar-sistema.sh` solo
+  la arregla en el AN17-51; en otro modelo no instala nada. Si la tuya no
+  responde, `sudo python3 packaging/capturar-tecla.py` te da su scancode. Ver
+  [La tecla del microfono](#la-tecla-del-microfono-f8).
 
 **Y lo que mas se nota en otro modelo: el paso 1 te puede BAJAR el techo de
 potencia sostenida de la CPU.** `preparar-sistema.sh` instala
@@ -651,7 +655,8 @@ sudo apt install dkms mokutil linux-headers-$(uname -r) \
 git clone https://github.com/The-Gekko/Nitro-Gekko.git
 cd Nitro-Gekko
 
-# 1. Prepara el HARDWARE (driver, PL1, atajo del boton de la marca).
+# 1. Prepara el HARDWARE (driver, PL1, atajo del boton de la marca y tecla
+#    del microfono).
 #    Diagnostica primero, sin tocar nada:
 ./packaging/preparar-sistema.sh --revisar
 sudo ./packaging/preparar-sistema.sh
@@ -1467,6 +1472,50 @@ bind = , XF86Presentation, exec, nitro-gekko
 
 Hyprland recarga la configuracion al guardarla; no hace falta cerrar sesion.
 
+## La tecla del microfono (F8)
+
+No es cosa de Nitro Gekko —el microfono lo silencia el sistema de sonido—, pero
+de serie **no hace nada**, y el motivo es del teclado de este portatil. La
+tecla F8, la del icono del microfono, manda el scancode `0x66`. La tabla de
+teclas de systemd (`60-keyboard.hwdb`) lo llama `micmute` en cinco Acer
+recientes (Nitro AN515-47 y ANV15-51, Predator PT314-52s, PHN16-71 y
+PHN16-72), pero el AN17-51 no esta, y el kernel le pone el nombre por defecto
+de ese scancode: `KEY_F15`. Para el escritorio eso es `XF86Launch6`, que no
+atiende nadie. Y **no deja rastro** en `journalctl`: no es una tecla
+desconocida, es una tecla con el nombre equivocado. Se ve con
+`sudo python3 packaging/capturar-tecla.py`.
+
+El paso 7 de `preparar-sistema.sh` escribe
+`/etc/udev/hwdb.d/61-nitro-gekko-teclado.hwdb`, con la misma entrada que trae
+systemd para esos cinco equipos pero **solo para el AN17-51**, la compila y se
+la aplica al teclado. De ahi en adelante la tecla es `XF86AudioMicMute`, y eso
+ya lo atienden GNOME y Caelestia por su cuenta. Para comprobarlo:
+
+```bash
+wpctl get-volume @DEFAULT_AUDIO_SOURCE@    # pulsa la tecla: debe salir [MUTED]
+```
+
+Si en la sesion abierta todavia no responde, cierra sesion y vuelve a entrar.
+Es una precaucion, no algo visto aqui: libinput lee que teclas tiene el
+teclado al abrirlo, y una que no estaba entonces puede no llegarle.
+
+**Ojo con `0xf0`, que tambien sale de este teclado.** Es el unico «Unknown key
+pressed» que aparece en `journalctl -k`, y por eso la primera version de este
+paso lo tomo por la tecla del microfono. No lo era: en el Nitro AN515-58 y el
+Predator PH315-52 la tabla de systemd lo llama `kbdillumdown` (Fn+F9, bajar la
+luz del teclado). En este equipo no se ha comprobado que tecla es, y no se
+toca.
+
+Un detalle que no se ve y rompe cosas: **donde se compila**. `systemd-hwdb
+update` a secas crea `/etc/udev/hwdb.bin`, y udev usa el primer `hwdb.bin` que
+encuentra empezando por `/etc`. Arch compila en `/usr/lib/udev` (`--usr`, desde
+su hook de pacman), asi que ese fichero en `/etc` taparia para siempre las
+actualizaciones de la tabla de systemd. El script compila donde ya este el de
+tu distribucion.
+
+`--revertir` borra el fichero, pero la tecla sigue funcionando **hasta
+reiniciar**: udev asigna teclas y no las desasigna.
+
 Si tu unidad emite otra tecla, averigualo con:
 
 ```bash
@@ -2121,7 +2170,7 @@ Esto se escribio, se midio y se probo en **un** portatil: Acer Nitro AN17-51
 ninguna mas.** Todo lo demas es hipotesis, y en este repositorio las
 hipotesis van declaradas como tales.
 
-Hay tres cosas que son **medidas de este equipo, no lecturas del tuyo**, y que
+Hay cuatro cosas que son **medidas de este equipo, no lecturas del tuyo**, y que
 por lo tanto pueden mentir en cualquier otra maquina:
 
 | Que | Donde vive | Si estas en otro equipo |
@@ -2129,6 +2178,7 @@ por lo tanto pueden mentir en cualquier otra maquina:
 | RPM tipicas por perfil | `RPM_TIPICAS` en `src/gekkonitro/sysfs.py` | son de referencia; las RPM en vivo si son las tuyas |
 | Rango del PL1, 10 a 65 W | `PL1_MIN_W`/`PL1_MAX_W` en `packaging/nitro-gekko-helper` **y** el `SpinRow` de `src/gekkonitro/window.py` | el 65 es el valor de fabrica de este chip |
 | `KEY_PRESENTATION` del boton de la marca | `packaging/preparar-sistema.sh` | averigualo con `packaging/capturar-tecla.py` |
+| scancode `0x66` de la tecla del microfono (F8) | paso 7 de `packaging/preparar-sistema.sh`, atado a `pnNitroAN17-51` | averigualo con `packaging/capturar-tecla.py` |
 
 De los siete modelos que reconoce la tabla DMI del driver, **solo el AN17-51
 esta probado**; los otros seis vienen del upstream. Eso esta dicho en
