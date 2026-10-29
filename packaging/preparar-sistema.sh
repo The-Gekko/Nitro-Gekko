@@ -574,7 +574,45 @@ fi
 # El boton con el logo de la marca (el que en Windows abre NitroSense) emite
 # KEY_PRESENTATION (evdev 425, scancode 0xf5) desde el teclado i8042. En
 # GNOME el atajo se llama XF86Presentation.
-if [[ -n "$USUARIO" ]]; then
+#
+# Solo GNOME guarda los atajos en gsettings.  En Hyprland el esquema de
+# media-keys ni siquiera existe ("No existe el esquema"), y este paso lo
+# intentaba igual: cada instalacion acababa en "mal  no se pudo escribir el
+# atajo" y la tecla seguia sin hacer nada (comprobado el 2026-10-28 con
+# Hyprland 0.56.2 y Caelestia).  Alli el atajo es una linea de SU
+# configuracion, y esa configuracion es de la persona: cada cual la tiene
+# partida a su manera (hyprland.conf, hyprland.lua, los ficheros de usuario
+# de Caelestia...), asi que este script no la edita.  Mira si el atajo existe
+# y, si no, dice que linea poner.  Las dos comprobaciones son independientes:
+# quien tenga GNOME y Hyprland instalados recibe las dos.
+HYPRLAND=0
+[[ -n "$USUARIO" ]] && pgrep -u "$USUARIO" -x Hyprland >/dev/null && HYPRLAND=1
+ATAJOS_GNOME=0
+gsettings list-keys org.gnome.settings-daemon.plugins.media-keys >/dev/null 2>&1 && ATAJOS_GNOME=1
+
+if (( HYPRLAND )); then
+    # hyprctl encuentra la sesion por HYPRLAND_INSTANCE_SIGNATURE, que sudo
+    # borra; sin ella responde "HYPRLAND_INSTANCE_SIGNATURE not set!" y no
+    # lista nada.  -i 0 coge la primera instancia de $XDG_RUNTIME_DIR/hypr,
+    # que como_usuario si le pasa.
+    if [[ "$MODO" == "revertir" ]]; then
+        info "el atajo de Hyprland no lo pone este script, asi que tampoco lo quita:"
+        info "si lo quieres fuera, borra la linea de XF86Presentation de tu configuracion."
+    elif grep -qF '"XF86Presentation"' < <(como_usuario hyprctl -i 0 binds -j 2>/dev/null); then
+        ok "el boton de la marca tiene atajo en Hyprland"
+    else
+        falta "el boton de la marca no tiene atajo en Hyprland"
+        info "Este script no edita tu configuracion de Hyprland; anade tu esta linea:"
+        info "   hyprland.lua:   hl.bind(\"XF86Presentation\", hl.dsp.exec_cmd(\"nitro-gekko\"))"
+        info "   hyprland.conf:  bind = , XF86Presentation, exec, nitro-gekko"
+        info "Con Caelestia va en ~/.config/caelestia/hypr-user.lua.  Hyprland la recarga solo."
+    fi
+fi
+
+if [[ -n "$USUARIO" ]] && (( ! ATAJOS_GNOME && ! HYPRLAND )); then
+    falta "ni GNOME ni Hyprland: el boton de la marca no se puede asignar desde aqui"
+    info "Asigna en tu escritorio la tecla XF86Presentation al comando 'nitro-gekko'."
+elif [[ -n "$USUARIO" ]] && (( ATAJOS_GNOME )); then
     RUTA_ATAJO=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/nitro-gekko/
     ESQ="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:${RUTA_ATAJO}"
     ACTUAL="$(como_usuario gsettings get "$ESQ" command 2>/dev/null || echo "''")"

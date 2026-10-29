@@ -685,7 +685,9 @@ gnome-extensions enable nitro-gekko@thegekko.dev
 ```
 
 Lanza la aplicacion con `nitro-gekko`, desde el menu, o con el **boton del logo
-de la marca** del teclado (`preparar-sistema.sh` lo deja asignado).
+de la marca** del teclado (`preparar-sistema.sh` lo deja asignado en GNOME; en
+Hyprland te dice la linea que falta, ver [El boton con el logo de la
+marca](#el-boton-con-el-logo-de-la-marca)).
 
 ### Empaquetado para Arch (AUR)
 
@@ -1444,6 +1446,26 @@ El boton que en Windows abre NitroSense emite `KEY_PRESENTATION`
 (evdev 425, scancode `0xf5`) desde el teclado i8042 — no desde el dispositivo de
 hotkeys WMI, que es donde todo el mundo lo busca. En GNOME el atajo se llama
 `XF86Presentation`, y `preparar-sistema.sh` lo asigna a `nitro-gekko`.
+
+**En Hyprland no lo asigna: te dice la linea que falta.** GNOME guarda los
+atajos en `gsettings`; Hyprland, en su propia configuracion, y esa
+configuracion es tuya y cada cual la tiene partida a su manera. Antes el script
+intentaba el `gsettings` igual, fallaba con «no se pudo escribir el atajo» y el
+boton seguia sin hacer nada (comprobado el 2026-10-28 con Hyprland 0.56.2 y
+Caelestia). Ahora mira con `hyprctl binds` si el atajo existe y, si no, te da
+la linea:
+
+```lua
+-- hyprland.lua (con Caelestia, en ~/.config/caelestia/hypr-user.lua)
+hl.bind("XF86Presentation", hl.dsp.exec_cmd("nitro-gekko"))
+```
+
+```ini
+# hyprland.conf
+bind = , XF86Presentation, exec, nitro-gekko
+```
+
+Hyprland recarga la configuracion al guardarla; no hace falta cerrar sesion.
 
 Si tu unidad emite otra tecla, averigualo con:
 
