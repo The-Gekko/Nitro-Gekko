@@ -162,6 +162,8 @@ La extension anade el cambio de modo y las RPM a **Configuracion rapida**, para
 no tener que abrir la aplicacion, y ensena el modo nuevo en pantalla cuando
 cambia desde fuera (por ejemplo, con la tecla de modo). Es **opcional**: con
 `--sin-extension` se instala solo la aplicacion, que no la necesita para nada.
+Fuera de GNOME no hay extension: en Hyprland, el aviso del modo nuevo lo da
+`nitro-gekko --avisos` con una notificacion. Ver [En Hyprland](#en-hyprland).
 
 Lo que tiene NitroSense y lo que no, funcion por funcion: [NitroSense y Nitro
 Gekko, funcion por funcion](#nitrosense-y-nitro-gekko-funcion-por-funcion).
@@ -207,7 +209,7 @@ AN17-51 (version 5.0.1327, el 23 de septiembre de 2026), no de su publicidad:
 | Bateria por debajo del 40 %: modo en Equilibrado | **se ofrece solo Equilibrado** | NitroSense lo fuerza; aqui no hay proceso en segundo plano que lo fuerce |
 | Un modo con cargador y otro con bateria, y cambio solo al enchufar | **igual** | lo cambia el driver; Nitro Gekko lo recuerda entre arranques |
 | Tecla de modo: recorrer modos o Turbo si/no | **igual** | la gira el propio `linuwu_sense` |
-| Ventana con el modo al pulsar la tecla | aviso en pantalla de la extension | firma comprobada en el `osdWindow.js` de GNOME 50.5; falta verlo en pantalla |
+| Ventana con el modo al pulsar la tecla | aviso en pantalla de la extension; en Hyprland, una notificacion ([En Hyprland](#en-hyprland)) | firma comprobada en el `osdWindow.js` de GNOME 50.5; falta verlo en pantalla |
 | Ventiladores Automatico / Maximo / Personalizado, «Auto» por ventilador | **igual** | minimo manual 30 %, medido (ver abajo) |
 | Ventiladores bloqueados en Silencioso y Eco | **igual** | el driver los devuelve al automatico |
 | Escenarios Uso diario, Juego, Ocasion tranquila | **si, con un clic** | NitroSense los activa solo al abrir un juego; aqui no (ver [Que no se va a anadir](#que-no-se-va-a-anadir-y-por-que)) |
@@ -1471,6 +1473,7 @@ bind = , XF86Presentation, exec, nitro-gekko
 ```
 
 Hyprland recarga la configuracion al guardarla; no hace falta cerrar sesion.
+Todo lo de Hyprland junto: [En Hyprland](#en-hyprland).
 
 ## La tecla del microfono (F8)
 
@@ -2142,6 +2145,60 @@ gnome-extensions info nitro-gekko@thegekko.dev   # el campo State lo dice
 journalctl -f -o cat /usr/bin/gnome-shell
 ```
 
+## En Hyprland
+
+La aplicacion no depende de GNOME y funciona igual en Hyprland (probado el
+2026-10-28 con Hyprland 0.56.2 y Caelestia). Lo que cambia es lo que en GNOME
+hace la extension, o lo que `preparar-sistema.sh` pone por `gsettings`:
+
+| En GNOME | En Hyprland |
+|---|---|
+| Toggle de modo en Configuracion rapida | no hay: se cambia desde la aplicacion o con la tecla de modo |
+| Aviso en pantalla al cambiar de modo (OSD) | una notificacion de `nitro-gekko --avisos` |
+| Boton de la marca: lo asigna `preparar-sistema.sh` | una linea de tu configuracion |
+| Tecla del microfono | igual: la arregla el paso 7, y Caelestia ya atiende `XF86AudioMicMute` |
+
+Las dos lineas, en la configuracion de Hyprland (con Caelestia, en
+`~/.config/caelestia/hypr-user.lua`):
+
+```lua
+hl.bind("XF86Presentation", hl.dsp.exec_cmd("nitro-gekko"))
+
+-- y dentro de tu hl.on("hyprland.start", function() ... end):
+    hl.exec_cmd("nitro-gekko --avisos")
+```
+
+```ini
+# hyprland.conf
+bind = , XF86Presentation, exec, nitro-gekko
+exec-once = nitro-gekko --avisos
+```
+
+`preparar-sistema.sh` **no edita** la configuracion de Hyprland —es tuya, y
+cada cual la tiene partida a su manera—, pero `--revisar` mira las dos cosas
+(pasos 5 y 6) y te da la linea que falte.
+
+**`nitro-gekko --avisos`** vigila `platform_profile` igual que la extension y,
+cuando el modo cambia —con la tecla de modo, desde la aplicacion, al enchufar
+o quitar el cargador—, saca «Modo Turbo», «Modo Eco»... como notificacion
+corriente (`org.freedesktop.Notifications`). Vale con cualquier servidor de
+notificaciones, no solo con el de Caelestia. Lo que importa de como esta
+hecho (`src/gekkonitro/avisos.py`):
+
+- **Solo anuncia lo confirmado.** Una lectura suelta de `platform_profile`
+  miente a veces (medido en `_leerPerfilFiable()` de `extension/extension.js`),
+  asi que usa la misma regla que la extension: dos lecturas seguidas iguales,
+  con `leer_perfil_confirmado()` de `sysfs.py`. Si no las consigue, calla.
+- **Un aviso sustituye al anterior** en vez de apilarse (pulsar la tecla de
+  modo cuatro veces deja uno), y no se queda en el historial (`transient`).
+- **Una sola copia.** Una segunda `nitro-gekko --avisos` ve que ya hay otra y
+  sale.
+- **No carga GTK.** Vive toda la sesion: 36 MB medidos, frente a 58 MB solo
+  por importar GTK4 y libadwaita. `__main__.py` lo despacha antes de
+  importarlos.
+
+En GNOME no hace falta: con la extension saldrian dos avisos por cambio.
+
 ---
 
 ## Como tratar este programa
@@ -2196,7 +2253,10 @@ src/gekkonitro/     la aplicacion GTK4/libadwaita
                     Python puro, como sysfs.py
   grafica.py        la grafica de RPM con cairo. Sin temporizador propio
   ajustes.py        cuatro claves en ~/.config/nitro-gekko/ajustes.json
-  __main__.py       Adw.Application, ventana unica
+  __main__.py       Adw.Application, ventana unica.  Despacha --avisos antes
+                    de importar GTK
+  avisos.py         nitro-gekko --avisos: el aviso de cambio de modo fuera de
+                    GNOME.  Sin GTK
 extension/          extension de GNOME Shell 50. Funciona sin la aplicacion
 packaging/          helper privilegiado, politica polkit, reglas udev, preset
                     de systemd y los cuatro instaladores

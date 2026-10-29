@@ -410,6 +410,35 @@ def _leer_int(ruta: Path | str) -> int | None:
         return None
 
 
+#: Lecturas del perfil para darlo por bueno: hasta tres, separadas 120 ms, y
+#: vale en cuanto dos seguidas dicen lo mismo.  Son INTENTOS_LECTURA_PERFIL y
+#: MS_ENTRE_LECTURAS de extension/extension.js, que es donde esta medido por que
+#: una lectura suelta no basta: con la ventana abierta, el 13,75 % de las
+#: lecturas fallan o devuelven OTRO perfil, porque linuwu_sense no ordena sus
+#: llamadas WMI entre si.
+INTENTOS_PERFIL_CONFIRMADO = 3
+S_ENTRE_LECTURAS_PERFIL = 0.12
+
+
+def leer_perfil_confirmado() -> str | None:
+    """Perfil activo, solo si dos lecturas seguidas coinciden.  Si no, None.
+
+    La extension, con las mismas lecturas, se queda con la ultima cuando
+    ninguna se repite.  Aqui no: quien lo usa (avisos.py) prefiere callar a
+    anunciar un modo que quiza no es el puesto.  Bloquea hasta 240 ms.
+    """
+    anterior: str | None = None
+    for intento in range(INTENTOS_PERFIL_CONFIRMADO):
+        if intento:
+            time.sleep(S_ENTRE_LECTURAS_PERFIL)
+        leido = _leer_texto(PERFIL_CLASE) or _leer_texto(PERFIL_LEGACY)
+        if leido and leido == anterior:
+            return leido
+        if leido:
+            anterior = leido
+    return None
+
+
 #: Cache del nodo de la bateria: el nombre no cambia mientras el equipo este
 #: encendido, y recorrer el directorio en cada refresco de 1 Hz seria tonto.
 _BATERIA_CACHE: Path | None = None

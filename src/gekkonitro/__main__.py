@@ -3,13 +3,21 @@
 Uso:
     python3 -m gekkonitro
     ./nitro-gekko          (lanzador del repositorio, sin instalar)
+    nitro-gekko --avisos   (aviso de cambio de modo fuera de GNOME, avisos.py)
 """
 
 from __future__ import annotations
 
 import sys
 
-import gi
+# --avisos no abre ventana: es un proceso que vive toda la sesion, y se
+# despacha ANTES de importar GTK4 y libadwaita, que le sumarian 25 MB por nada.
+if __name__ == "__main__" and sys.argv[1:] == ["--avisos"]:
+    from .avisos import main as _avisos
+
+    sys.exit(_avisos())
+
+import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")

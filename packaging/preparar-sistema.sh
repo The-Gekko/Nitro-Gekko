@@ -132,6 +132,13 @@ como_usuario() {
     fi
 }
 
+# ¿Esta delante en Hyprland?  Lo usan el paso 5 (el aviso de modo que en GNOME
+# da la extension) y el 6 (el atajo del boton de la marca): en los dos, lo que
+# en GNOME pone o mira este script, en Hyprland es una linea de SU
+# configuracion.
+HYPRLAND=0
+[[ -n "$USUARIO" ]] && pgrep -u "$USUARIO" -x Hyprland >/dev/null && HYPRLAND=1
+
 # ---------------------------------------------------------------------------
 titulo "0. ¿Es este el portatil correcto?"
 # ---------------------------------------------------------------------------
@@ -515,12 +522,18 @@ if [[ -n "$GM" && -f "$GM" ]] && grep -vE '^\s*[#;]' "$GM" 2>/dev/null | grep -q
 fi
 
 # ---------------------------------------------------------------------------
-titulo "5. Extension de GNOME Shell"
+titulo "5. Extension de GNOME Shell  —  o el aviso de modo fuera de GNOME"
 # ---------------------------------------------------------------------------
 if [[ -n "$USUARIO" ]]; then
     HOME_U="$(getent passwd "$USUARIO" | cut -d: -f6)"
     EXT="$HOME_U/.local/share/gnome-shell/extensions/nitro-gekko@thegekko.dev"
-    if [[ -d "$EXT" ]]; then
+    if ! command -v gnome-shell >/dev/null; then
+        # Antes, en Hyprland, este paso decia "falta  instalada pero NO
+        # activada", como si hubiera algo que arreglar.  Sin GNOME Shell no hay
+        # nada que activar.
+        info "aqui no hay GNOME Shell: la extension no aplica"
+        [[ -d "$EXT" ]] && info "(esta copiada en $EXT, pero no hace nada)"
+    elif [[ -d "$EXT" ]]; then
         ok "extension instalada"
         if como_usuario gnome-extensions list --enabled 2>/dev/null | grep -q nitro-gekko; then
             ok "y activada"
@@ -550,6 +563,25 @@ if [[ -n "$USUARIO" ]]; then
         # Es opcional (install.sh --sin-extension): la aplicacion no la necesita.
         info "extension no instalada (es opcional; la aplicacion funciona sin ella)"
         info "La instala:  sudo ./packaging/install.sh"
+    fi
+
+    # El aviso de cambio de modo que en GNOME da la extension, en Hyprland lo
+    # da 'nitro-gekko --avisos' (src/gekkonitro/avisos.py).  Como el atajo del
+    # paso 6, se arranca desde la configuracion de Hyprland, que este script no
+    # edita.  El patron lleva 'python3 -m' para no encontrar a este mismo
+    # script ni a quien lo tenga abierto en un editor.
+    if (( HYPRLAND )); then
+        if [[ "$MODO" == "revertir" ]]; then
+            info "el aviso de modo se arranca desde tu configuracion de Hyprland: si lo"
+            info "quieres fuera, borra la linea de 'nitro-gekko --avisos'."
+        elif pgrep -u "$USUARIO" -f 'python3 -m gekkonitro --avisos$' >/dev/null; then
+            ok "aviso de cambio de modo activo (nitro-gekko --avisos)"
+        else
+            falta "en Hyprland nadie avisa en pantalla al cambiar de modo"
+            info "Arrancalo con la sesion, desde tu configuracion de Hyprland:"
+            info "   hyprland.lua:   hl.exec_cmd(\"nitro-gekko --avisos\")  dentro de hl.on(\"hyprland.start\", ...)"
+            info "   hyprland.conf:  exec-once = nitro-gekko --avisos"
+        fi
     fi
 else
     falta "no se ha podido averiguar que usuario esta delante"
@@ -585,8 +617,6 @@ fi
 # de Caelestia...), asi que este script no la edita.  Mira si el atajo existe
 # y, si no, dice que linea poner.  Las dos comprobaciones son independientes:
 # quien tenga GNOME y Hyprland instalados recibe las dos.
-HYPRLAND=0
-[[ -n "$USUARIO" ]] && pgrep -u "$USUARIO" -x Hyprland >/dev/null && HYPRLAND=1
 ATAJOS_GNOME=0
 gsettings list-keys org.gnome.settings-daemon.plugins.media-keys >/dev/null 2>&1 && ATAJOS_GNOME=1
 
