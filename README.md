@@ -2231,6 +2231,12 @@ programa que corre como root. Casi todo se arregla en dos ordenes, pero hay
 fallos que **no se ven hasta el siguiente arranque**, que es el peor momento
 para descubrirlos.
 
+**Los commits y las subidas los hace el autor del repositorio.** Quien toque
+el codigo —persona o agente de IA— deja los cambios en el arbol de trabajo,
+comprobados y sin `git commit` ni `git push`, y dice que ha cambiado y como lo
+ha comprobado. El autor los revisa, hace el commit y los sube. Decidido el
+2026-10-28.
+
 ### Lo primero: el alcance
 
 Esto se escribio, se midio y se probo en **un** portatil: Acer Nitro AN17-51
